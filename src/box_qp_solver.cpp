@@ -23,12 +23,12 @@ void unconstrained_solve(const double* L, const double* g, int n, double* U)
 }
 
 // ---------------------------------------------------------------------------
-// is_feasible: check all elements in [V_min, V_max]
+// is_feasible: check all elements in [u_min, u_max]
 // ---------------------------------------------------------------------------
-bool is_feasible(const double* U, int n, double V_min, double V_max)
+bool is_feasible(const double* U, int n, double u_min, double u_max)
 {
     for (int i = 0; i < n; ++i) {
-        if (U[i] < V_min || U[i] > V_max)
+        if (U[i] < u_min || U[i] > u_max)
             return false;
     }
     return true;
@@ -37,15 +37,15 @@ bool is_feasible(const double* U, int n, double V_min, double V_max)
 // ---------------------------------------------------------------------------
 // clip_to_bounds: clamp each element, return count of clipped elements
 // ---------------------------------------------------------------------------
-int clip_to_bounds(double* U, int n, double V_min, double V_max)
+int clip_to_bounds(double* U, int n, double u_min, double u_max)
 {
     int count = 0;
     for (int i = 0; i < n; ++i) {
-        if (U[i] < V_min) {
-            U[i] = V_min;
+        if (U[i] < u_min) {
+            U[i] = u_min;
             ++count;
-        } else if (U[i] > V_max) {
-            U[i] = V_max;
+        } else if (U[i] > u_max) {
+            U[i] = u_max;
             ++count;
         }
     }
@@ -54,23 +54,25 @@ int clip_to_bounds(double* U, int n, double V_min, double V_max)
 
 // ---------------------------------------------------------------------------
 // box_qp_solve: active-set method for box-constrained QP
-//   min 0.5 U' H U + g' U   s.t.  V_min <= U_i <= V_max
+//   min 0.5 U' H U + g' U   s.t.  u_min <= U_i <= u_max
 // ---------------------------------------------------------------------------
 int box_qp_solve(const double* H, const double* L, const double* g,
-                 double V_min, double V_max, int n, int max_iter,
-                 BoxQPWorkspace& ws)
+                 double u_min, double u_max, int n, int max_iter,
+                 BoxQPWorkspace& ws, bool skip_unconstrained)
 {
     constexpr double BOUND_TOL = 1.0e-12;
     constexpr double KKT_TOL   = 1.0e-10;
 
-    // Step 1: unconstrained solution
-    unconstrained_solve(L, g, n, ws.U);
+    if (!skip_unconstrained) {
+        // Step 1: unconstrained solution
+        unconstrained_solve(L, g, n, ws.U);
 
-    if (is_feasible(ws.U, n, V_min, V_max))
-        return 0;
+        if (is_feasible(ws.U, n, u_min, u_max))
+            return 0;
+    }
 
     // Clip to bounds before entering active-set loop
-    clip_to_bounds(ws.U, n, V_min, V_max);
+    clip_to_bounds(ws.U, n, u_min, u_max);
 
     // Active-set iterations
     int iter = 0;
@@ -85,8 +87,8 @@ int box_qp_solve(const double* H, const double* L, const double* g,
         int n_clamped = 0;
 
         for (int i = 0; i < n; ++i) {
-            bool at_lower = (ws.U[i] <= V_min + BOUND_TOL);
-            bool at_upper = (ws.U[i] >= V_max - BOUND_TOL);
+            bool at_lower = (ws.U[i] <= u_min + BOUND_TOL);
+            bool at_upper = (ws.U[i] >= u_max - BOUND_TOL);
             bool clamped  = (at_lower && ws.grad[i] >= 0.0) ||
                             (at_upper && ws.grad[i] <= 0.0);
             if (clamped) {
@@ -130,11 +132,11 @@ int box_qp_solve(const double* H, const double* L, const double* g,
         for (int a = 0; a < n_free; ++a) {
             int idx = ws.free_idx[a];
             double d = ws.rhs[a] - ws.U[idx];
-            if (d > 0.0 && ws.U[idx] + d > V_max) {
-                double a_cand = (V_max - ws.U[idx]) / d;
+            if (d > 0.0 && ws.U[idx] + d > u_max) {
+                double a_cand = (u_max - ws.U[idx]) / d;
                 if (a_cand < alpha) alpha = a_cand;
-            } else if (d < 0.0 && ws.U[idx] + d < V_min) {
-                double a_cand = (V_min - ws.U[idx]) / d;
+            } else if (d < 0.0 && ws.U[idx] + d < u_min) {
+                double a_cand = (u_min - ws.U[idx]) / d;
                 if (a_cand < alpha) alpha = a_cand;
             }
         }
@@ -146,7 +148,7 @@ int box_qp_solve(const double* H, const double* L, const double* g,
         }
 
         // Snap to bounds to avoid floating-point drift
-        clip_to_bounds(ws.U, n, V_min, V_max);
+        clip_to_bounds(ws.U, n, u_min, u_max);
 
         // (h) KKT check (only meaningful when full step was taken)
         if (alpha >= 1.0 - 1.0e-14) {
@@ -157,8 +159,8 @@ int box_qp_solve(const double* H, const double* L, const double* g,
             bool kkt_ok = true;
             for (int j = 0; j < n_clamped; ++j) {
                 int ci = ws.clamped_idx[j];
-                bool at_lower = (ws.U[ci] <= V_min + BOUND_TOL);
-                bool at_upper = (ws.U[ci] >= V_max - BOUND_TOL);
+                bool at_lower = (ws.U[ci] <= u_min + BOUND_TOL);
+                bool at_upper = (ws.U[ci] >= u_max - BOUND_TOL);
                 if (at_lower && ws.grad[ci] < -KKT_TOL) { kkt_ok = false; break; }
                 if (at_upper && ws.grad[ci] >  KKT_TOL) { kkt_ok = false; break; }
             }
@@ -168,4 +170,35 @@ int box_qp_solve(const double* H, const double* L, const double* g,
     }
 
     return iter + 1;  // number of iterations consumed (1-based)
+}
+
+// ---------------------------------------------------------------------------
+// check_box_kkt: verify KKT conditions for box-constrained QP at point U
+//   Computes grad = H*U + g, then checks:
+//     - free variables: |grad_i| <= tol
+//     - at lower bound: grad_i >= -tol
+//     - at upper bound: grad_i <= tol
+// ---------------------------------------------------------------------------
+bool check_box_kkt(const double* H, const double* g, const double* U,
+                   double u_min, double u_max, int n, double* grad_out)
+{
+    constexpr double BOUND_TOL = 1.0e-12;
+    constexpr double KKT_TOL   = 1.0e-10;
+
+    // grad = H * U + g
+    mpc_linalg::gemv(n, n, H, U, grad_out);
+    mpc_linalg::axpy(n, 1.0, g, grad_out);
+
+    for (int i = 0; i < n; ++i) {
+        bool at_lower = (U[i] <= u_min + BOUND_TOL);
+        bool at_upper = (U[i] >= u_max - BOUND_TOL);
+
+        if (at_lower && grad_out[i] < -KKT_TOL)
+            return false;
+        if (at_upper && grad_out[i] > KKT_TOL)
+            return false;
+        if (!at_lower && !at_upper && std::fabs(grad_out[i]) > KKT_TOL)
+            return false;
+    }
+    return true;
 }

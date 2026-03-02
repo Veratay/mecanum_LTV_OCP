@@ -3,6 +3,7 @@ project(mecanum_mpc LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 
 option(MPC_USE_NEON "Use custom NEON kernels for online linear algebra" OFF)
+option(MPC_ENABLE_RERUN "Enable Rerun visualization for tests" OFF)
 
 # Find BLAS/LAPACK
 find_package(BLAS REQUIRED)
@@ -47,3 +48,23 @@ add_mpc_test(test_cholesky)
 add_mpc_test(test_box_qp)
 add_mpc_test(test_mpc_roundtrip)
 add_mpc_test(test_timing)
+
+# Rerun visualization test (optional, not part of main library)
+if(MPC_ENABLE_RERUN)
+    include(FetchContent)
+
+    FetchContent_Declare(
+        rerun_sdk
+        URL https://github.com/rerun-io/rerun/releases/download/0.25.1/rerun_cpp_sdk.zip
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_Declare(
+        nlohmann_json
+        URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(rerun_sdk nlohmann_json)
+
+    add_executable(test_trajopt_rerun tests/test_trajopt_rerun.cpp)
+    target_link_libraries(test_trajopt_rerun PRIVATE mecanum_mpc rerun_sdk nlohmann_json::nlohmann_json)
+endif()

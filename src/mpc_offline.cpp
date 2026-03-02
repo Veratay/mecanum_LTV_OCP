@@ -97,8 +97,8 @@ int mpc_save_windows(const char* filename, const PrecomputedWindow* windows,
     header.N = static_cast<uint32_t>(config.N);
     header.nx = static_cast<uint32_t>(NX);
     header.nu = static_cast<uint32_t>(NU);
-    header.V_min = config.V_min;
-    header.V_max = config.V_max;
+    header.u_min = config.u_min;
+    header.u_max = config.u_max;
 
     if (std::fwrite(&header, sizeof(header), 1, fp) != 1) {
         std::fclose(fp);
@@ -169,8 +169,8 @@ PrecomputedWindow* mpc_load_windows(const char* filename, int& n_windows_out,
 
     // Populate config from header
     config_out.N = static_cast<int>(header.N);
-    config_out.V_min = header.V_min;
-    config_out.V_max = header.V_max;
+    config_out.u_min = header.u_min;
+    config_out.u_max = header.u_max;
 
     int n_windows = static_cast<int>(header.n_windows);
     PrecomputedWindow* windows = new PrecomputedWindow[n_windows];

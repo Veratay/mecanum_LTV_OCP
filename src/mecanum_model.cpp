@@ -1,8 +1,19 @@
-// mecanum_model.cpp -- Mecanum drivetrain kinematic model
+// mecanum_model.cpp -- Mecanum drivetrain model with DC motor torque-speed curve
 //
-// Implements the 3x4 mecanum Jacobian (voltage -> body wrench) and the
+// Implements the 3x4 mecanum Jacobian (duty cycle -> body wrench) and the
 // continuous-time LTV state-space matrices Ac(theta), Bc(theta) used by
 // the MPC linearization.
+//
+// Motor model (per wheel):
+//   torque_i = stall_torque * (d_i  -  omega_wheel_i / free_speed)
+//   force_i  = torque_i / wheel_radius
+//
+// Wheel speeds are derived from robot-frame (body) velocities:
+//   1. Rotate world velocities to robot frame:
+//        vx_body =  cos(theta)*vx_world + sin(theta)*vy_world
+//        vy_body = -sin(theta)*vx_world + cos(theta)*vy_world
+//   2. Mecanum inverse kinematics (in robot frame):
+//        omega_wheel_i = (vx_body ± vy_body ± L*omega) / r
 
 #include "mecanum_model.h"
 
@@ -13,40 +24,25 @@
 // compute_mecanum_jacobian
 // ---------------------------------------------------------------------------
 //
-// Builds the 3x4 matrix J_mec that maps wheel voltages [V_FL, V_FR, V_RL, V_RR]
-// to the body-frame wrench [Fx, Fy, tau].
+// Builds the 3x4 matrix J_mec that maps wheel duty cycles [d_FL, d_FR, d_RL, d_RR]
+// to the body-frame wrench [Fx, Fy, tau] at zero wheel speed (stall condition).
 //
-// Derivation (virtual-work duality):
-//   The standard mecanum inverse kinematics maps body twist [vx, vy, omega]
-//   to wheel angular velocities:
+// Each wheel's stall force is:  F_i = (stall_torque * d_i) / r
 //
-//     w_FL = (1/r)(vx - vy - (lx+ly)*omega)
-//     w_FR = (1/r)(vx + vy + (lx+ly)*omega)
-//     w_RL = (1/r)(vx + vy - (lx+ly)*omega)
-//     w_RR = (1/r)(vx - vy + (lx+ly)*omega)
+// The mecanum geometry sums these forces into body wrench:
+//   Fx  = F_FL + F_FR + F_RL + F_RR                    (all push forward)
+//   Fy  = -F_FL + F_FR + F_RL - F_RR                   (diagonal roller pattern)
+//   tau = (-F_FL + F_FR - F_RL + F_RR) * (lx+ly)       (rotation about center)
 //
-//   Written as omega_wheels = J_inv * twist, where J_inv is 4x3.
-//   By virtual work:  twist^T * wrench = omega_wheels^T * torques
-//                     => wrench = J_inv^T * torques
-//
-//   With a simplified DC motor model (torque = motor_kv * voltage):
-//     wrench = J_inv^T * motor_kv * V
-//
-//   Therefore J_mec = motor_kv * J_inv^T, giving:
-//
-//     J_mec = (motor_kv / r) * [ 1   1   1   1  ]   <- Fx row
-//                               [-1   1   1  -1  ]   <- Fy row
-//                               [-(lx+ly)  (lx+ly)  -(lx+ly)  (lx+ly)]  <- tau row
-//
-//   Stored column-major: J_mec[row + 3*col].
+// So J_mec = (stall_torque / r) * sign_matrix,  stored column-major.
 //
 void compute_mecanum_jacobian(ModelParams& params)
 {
     const double r   = params.wheel_radius;
-    const double kv  = params.motor_kv;
-    const double lxy = params.lx + params.ly;   // half-track sum
+    const double ts  = params.stall_torque;
+    const double lxy = params.lx + params.ly;
 
-    const double s = kv / r;   // common scale factor
+    const double s = ts / r;   // stall force per unit duty cycle per wheel
 
     // Column 0: FL wheel  (signs: +1, -1, -(lx+ly))
     params.J_mec[0 + 3 * 0] =  s;
@@ -73,24 +69,54 @@ void compute_mecanum_jacobian(ModelParams& params)
 // continuous_dynamics
 // ---------------------------------------------------------------------------
 //
-// Fills the continuous-time LTV matrices Ac (6x6) and Bc (6x4), both
-// column-major, for the state vector:
+// Fills Ac (6x6) and Bc (6x4), both column-major, for the state:
 //
 //   x = [px, py, theta, vx_world, vy_world, omega]
 //
-// Dynamics:
-//   px_dot        = vx_world
-//   py_dot        = vy_world
-//   theta_dot     = omega
-//   vx_world_dot  = -(d_lin / m) * vx_world  +  (1/m) * [R(theta) * F_body]_x
-//   vy_world_dot  = -(d_lin / m) * vy_world  +  (1/m) * [R(theta) * F_body]_y
-//   omega_dot     = -(d_ang / J) * omega      +  (1/J) * tau
+// The dynamics follow the same chain as the Python reference
+// (gen_mpc_native.py):
 //
-// where F_body = J_mec[0:2, :] * V  and  tau = J_mec[2, :] * V,
-// and R(theta) rotates body-frame forces into the world frame.
+//   1. Rotate world velocities to robot frame:
+//        vx_body =  cos(θ)·vx_w + sin(θ)·vy_w
+//        vy_body = -sin(θ)·vx_w + cos(θ)·vy_w
 //
-// Ac encodes the linear/damping part; Bc encodes the input coupling
-// (with the heading-dependent rotation applied to the force rows).
+//   2. Wheel angular velocities (robot-frame inverse kinematics):
+//        ω_FL = (vx_body - vy_body - L·ω) / r
+//        ω_FR = (vx_body + vy_body + L·ω) / r
+//        ω_RL = (vx_body + vy_body - L·ω) / r
+//        ω_RR = (vx_body - vy_body + L·ω) / r
+//
+//   3. Motor torque from torque-speed curve:
+//        τ_i = τ_stall · (d_i − ω_wheel_i / ω_free)
+//
+//   4. Wheel contact force:
+//        F_i = τ_i / r
+//
+//   5. Sum into body-frame wrench via mecanum geometry:
+//        [Fx_body, Fy_body, τ_body]
+//
+//   6. Rotate forces back to world frame:
+//        [Fx_w, Fy_w] = R(θ) · [Fx_body, Fy_body]
+//
+// Linearizing, this splits into:
+//   - Input coupling (Bc): stall force J_mec rotated to world frame (same as before)
+//   - Back-EMF damping (Ac): velocity-dependent torque reduction
+//
+// The back-EMF contributes an additional damping in body frame.  Two 1/r
+// factors appear:
+//   • ω_wheel = v_body / r        (step 2: kinematics)
+//   • F = τ / r                    (step 4: torque-to-force)
+//
+// Combined per wheel: F_emf = -(τ_stall / ω_free) · v_body_combo / r / r
+//
+// Summing over 4 wheels, the body-frame damping matrix is diagonal:
+//   D_body = (4 · τ_stall / (ω_free · r²)) · diag(1, 1, L²)
+//
+// Rotating the 2×2 force block to world frame:
+//   D_world_force = R(θ) · (scalar · I₂) · R(-θ) = scalar · I₂
+//   (isotropic — rotation has no effect)
+//
+// So the back-EMF simply adds to the existing viscous damping coefficients.
 //
 void continuous_dynamics(double theta, const ModelParams& params,
                          double Ac[NX * NX], double Bc[NX * NU])
@@ -101,11 +127,14 @@ void continuous_dynamics(double theta, const ModelParams& params,
     std::memset(Ac, 0, NX * NX * sizeof(double));
     std::memset(Bc, 0, NX * NU * sizeof(double));
 
-    // Shorthand
     const double m    = params.mass;
     const double J    = params.inertia;
     const double d_l  = params.damping_linear;
     const double d_a  = params.damping_angular;
+    const double r    = params.wheel_radius;
+    const double lxy  = params.lx + params.ly;
+    const double ts   = params.stall_torque;
+    const double wf   = params.free_speed;
 
     const double ct = std::cos(theta);
     const double st = std::sin(theta);
@@ -114,46 +143,51 @@ void continuous_dynamics(double theta, const ModelParams& params,
     // Ac  (column-major: element (row, col) at index [row + NX*col])
     // ------------------------------------------------------------------
 
-    // Position-to-velocity coupling (rows 0-2, cols 3-5):
-    //   px_dot  = vx_world   -> Ac(0,3) = 1
-    //   py_dot  = vy_world   -> Ac(1,4) = 1
-    //   theta_dot = omega    -> Ac(2,5) = 1
-    Ac[0 + NX * 3] = 1.0;
-    Ac[1 + NX * 4] = 1.0;
-    Ac[2 + NX * 5] = 1.0;
+    // Position kinematics
+    Ac[0 + NX * 3] = 1.0;   // px_dot = vx_world
+    Ac[1 + NX * 4] = 1.0;   // py_dot = vy_world
+    Ac[2 + NX * 5] = 1.0;   // theta_dot = omega
 
-    // Velocity damping (rows 3-5, cols 3-5):
-    //   vx_world_dot += -(d_lin/m) * vx_world
-    //   vy_world_dot += -(d_lin/m) * vy_world
-    //   omega_dot    += -(d_ang/J) * omega
-    Ac[3 + NX * 3] = -d_l / m;
-    Ac[4 + NX * 4] = -d_l / m;
-    Ac[5 + NX * 5] = -d_a / J;
+    // Back-EMF damping from motor torque-speed relationship.
+    //
+    // Per-wheel back-EMF force (in body frame):
+    //   F_emf_i = -(τ_stall / ω_free) · ω_wheel_i / r
+    //           = -(τ_stall / ω_free) · v_body_combo_i / r²
+    //                     ↑ torque-speed      ↑ kinematics  ↑ torque→force
+    //
+    // After summing 4 wheels (each contributes +vx_body to Fx):
+    //   d_emf_lin = 4 · τ_stall / (ω_free · r²)
+    //   d_emf_ang = 4 · L² · τ_stall / (ω_free · r²)
+    //
+    const double emf_per_wheel = ts / (wf * r * r);  // force damping per unit body vel per wheel
+    const double d_emf_lin = 4.0 * emf_per_wheel;
+    const double d_emf_ang = 4.0 * lxy * lxy * emf_per_wheel;
+
+    // Total velocity damping (viscous friction + motor back-EMF)
+    Ac[3 + NX * 3] = -(d_l + d_emf_lin) / m;
+    Ac[4 + NX * 4] = -(d_l + d_emf_lin) / m;
+    Ac[5 + NX * 5] = -(d_a + d_emf_ang) / J;
 
     // ------------------------------------------------------------------
-    // Bc  (column-major: element (row, col) at index [row + NX*col])
+    // Bc  (input coupling: J_mec rotated from body to world frame)
     // ------------------------------------------------------------------
     //
-    // For each wheel column j (0..3):
-    //   Bc(3, j) = (1/m) * ( cos(theta)*J_mec(0,j) - sin(theta)*J_mec(1,j) )
-    //   Bc(4, j) = (1/m) * ( sin(theta)*J_mec(0,j) + cos(theta)*J_mec(1,j) )
-    //   Bc(5, j) = (1/J) * J_mec(2, j)
-    //
-    // J_mec is 3x4 column-major: element (r, c) at J_mec[r + 3*c].
+    // J_mec maps duty cycles to body-frame wrench at stall (step 5).
+    // We rotate the force part to world frame (step 6):
+    //   Bc(3, j) = (1/m) · ( cos(θ)·Fx_j − sin(θ)·Fy_j )
+    //   Bc(4, j) = (1/m) · ( sin(θ)·Fx_j + cos(θ)·Fy_j )
+    //   Bc(5, j) = (1/J) · τ_j
     //
     const double inv_m = 1.0 / m;
     const double inv_J = 1.0 / J;
 
     for (int j = 0; j < NU; ++j) {
-        const double Fx_j  = params.J_mec[0 + 3 * j];   // body-frame Fx per volt
-        const double Fy_j  = params.J_mec[1 + 3 * j];   // body-frame Fy per volt
-        const double tau_j = params.J_mec[2 + 3 * j];   // body-frame tau per volt
+        const double Fx_j  = params.J_mec[0 + 3 * j];
+        const double Fy_j  = params.J_mec[1 + 3 * j];
+        const double tau_j = params.J_mec[2 + 3 * j];
 
-        // Rotate body-frame force into world frame and scale by 1/m
         Bc[3 + NX * j] = inv_m * (ct * Fx_j - st * Fy_j);
         Bc[4 + NX * j] = inv_m * (st * Fx_j + ct * Fy_j);
-
-        // Torque does not require rotation
         Bc[5 + NX * j] = inv_J * tau_j;
     }
 }

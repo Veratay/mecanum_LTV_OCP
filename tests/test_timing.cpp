@@ -30,7 +30,8 @@ static ModelParams make_params()
     p.wheel_radius    = 0.05;
     p.lx              = 0.15;
     p.ly              = 0.15;
-    p.motor_kv        = 0.5;
+    p.stall_torque    = 6.0;
+    p.free_speed      = 435.0;
     compute_mecanum_jacobian(p);
     return p;
 }
@@ -42,13 +43,13 @@ static void set_diag(double* M, int n, const double* diag_vals)
         M[i + i * n] = diag_vals[i];
 }
 
-static MPCConfig make_config(int N, double dt, double V_min, double V_max)
+static MPCConfig make_config(int N, double dt, double u_min, double u_max)
 {
     MPCConfig cfg{};
     cfg.N     = N;
     cfg.dt    = dt;
-    cfg.V_min = V_min;
-    cfg.V_max = V_max;
+    cfg.u_min = u_min;
+    cfg.u_max = u_max;
 
     double q_diag[NX] = {10.0, 10.0, 5.0, 1.0, 1.0, 0.5};
     double r_diag[NU] = {0.1, 0.1, 0.1, 0.1};
@@ -150,11 +151,11 @@ static void bench_constrained(const PrecomputedWindow* windows,
 {
     // Use tight bounds to activate constraints
     MPCConfig config_tight = config_wide;
-    config_tight.V_min = -1.0;
-    config_tight.V_max =  1.0;
+    config_tight.u_min = -1.0;
+    config_tight.u_max =  1.0;
 
-    std::printf("\n--- Benchmark 2: Constrained solve (N=%d, V=[%.1f,%.1f], 10000 iters) ---\n",
-                config_tight.N, config_tight.V_min, config_tight.V_max);
+    std::printf("\n--- Benchmark 2: Constrained solve (N=%d, u=[%.1f,%.1f], 10000 iters) ---\n",
+                config_tight.N, config_tight.u_min, config_tight.u_max);
 
     const int N_RUNS = 10000;
     double times_ns[N_RUNS];
@@ -202,7 +203,7 @@ static void bench_varying_horizon(const ModelParams& params)
         int N = horizons[h];
         int n_path = N + 10;
 
-        MPCConfig cfg = make_config(N, dt, -12.0, 12.0);
+        MPCConfig cfg = make_config(N, dt, -1.0, 1.0);
         RefNode* ref = make_ref_path(n_path, dt);
 
         int n_win = 0;
@@ -244,7 +245,7 @@ int main()
     const double dt = 0.02;
     const int n_path = 50;
 
-    MPCConfig config = make_config(N, dt, -12.0, 12.0);
+    MPCConfig config = make_config(N, dt, -1.0, 1.0);
     RefNode* ref_path = make_ref_path(n_path, dt);
 
     int n_windows = 0;

@@ -77,13 +77,13 @@ static void test_unconstrained() {
     for (int i = 0; i < n; i++) g[i] = lcg_rand() * 5.0;
 
     // Wide bounds -> effectively unconstrained
-    double V_min = -1000.0;
-    double V_max =  1000.0;
+    double u_min = -1000.0;
+    double u_max =  1000.0;
 
     BoxQPWorkspace ws;
     std::memset(&ws, 0, sizeof(ws));
 
-    int iters = box_qp_solve(H, L, g, V_min, V_max, n, 50, ws);
+    int iters = box_qp_solve(H, L, g, u_min, u_max, n, 50, ws);
 
     check(iters == 0, "Unconstrained returns 0 iterations");
 
@@ -117,13 +117,13 @@ static void test_2d_clamped() {
     int ret = cholesky_factor(n, H, L);
     check(ret == 0, "Cholesky factor succeeds (2x2)");
 
-    double V_min = -1.0;
-    double V_max =  2.0;
+    double u_min = -1.0;
+    double u_max =  2.0;
 
     BoxQPWorkspace ws;
     std::memset(&ws, 0, sizeof(ws));
 
-    int iters = box_qp_solve(H, L, g, V_min, V_max, n, 50, ws);
+    int iters = box_qp_solve(H, L, g, u_min, u_max, n, 50, ws);
 
     char label[128];
     std::snprintf(label, sizeof(label),
@@ -160,13 +160,13 @@ static void test_mixed_free_clamped() {
 
     // Part A: wide bounds, unconstrained optimum should be within bounds
     {
-        double V_min = -5.0;
-        double V_max =  5.0;
+        double u_min = -5.0;
+        double u_max =  5.0;
 
         BoxQPWorkspace ws;
         std::memset(&ws, 0, sizeof(ws));
 
-        int iters = box_qp_solve(H, L, g, V_min, V_max, n, 50, ws);
+        int iters = box_qp_solve(H, L, g, u_min, u_max, n, 50, ws);
         check(iters == 0, "Wide bounds: 0 iterations (unconstrained feasible)");
 
         // Unconstrained optimum: solve [[4,1],[1,4]]*x = [10,2]
@@ -186,19 +186,19 @@ static void test_mixed_free_clamped() {
         check(err0 < 1e-10 && err1 < 1e-10, label);
     }
 
-    // Part B: tight upper bound V_max = 2, so U[0] is clamped
+    // Part B: tight upper bound u_max = 2, so U[0] is clamped
     {
-        double V_min = -5.0;
-        double V_max =  2.0;
+        double u_min = -5.0;
+        double u_max =  2.0;
 
         BoxQPWorkspace ws;
         std::memset(&ws, 0, sizeof(ws));
 
-        int iters = box_qp_solve(H, L, g, V_min, V_max, n, 50, ws);
+        int iters = box_qp_solve(H, L, g, u_min, u_max, n, 50, ws);
 
         char label[128];
         std::snprintf(label, sizeof(label),
-                      "Tight V_max: converged in %d iterations", iters);
+                      "Tight u_max: converged in %d iterations", iters);
         check(iters >= 0, label);
 
         // Verify KKT conditions at solution
@@ -209,13 +209,13 @@ static void test_mixed_free_clamped() {
         grad[1] += g[1];
 
         // For each variable:
-        //   - If V_min < U[i] < V_max (free), grad[i] should be ~0
-        //   - If U[i] == V_min (clamped low), grad[i] >= 0
-        //   - If U[i] == V_max (clamped high), grad[i] <= 0
+        //   - If u_min < U[i] < u_max (free), grad[i] should be ~0
+        //   - If U[i] == u_min (clamped low), grad[i] >= 0
+        //   - If U[i] == u_max (clamped high), grad[i] <= 0
         bool kkt_ok = true;
         for (int i = 0; i < n; i++) {
-            bool at_lower = std::fabs(ws.U[i] - V_min) < 1e-10;
-            bool at_upper = std::fabs(ws.U[i] - V_max) < 1e-10;
+            bool at_lower = std::fabs(ws.U[i] - u_min) < 1e-10;
+            bool at_upper = std::fabs(ws.U[i] - u_max) < 1e-10;
             if (!at_lower && !at_upper) {
                 // Free variable: gradient should be ~0
                 if (std::fabs(grad[i]) > 1e-8) kkt_ok = false;
@@ -234,7 +234,7 @@ static void test_mixed_free_clamped() {
         // Verify all within bounds
         bool in_bounds = true;
         for (int i = 0; i < n; i++) {
-            if (ws.U[i] < V_min - 1e-12 || ws.U[i] > V_max + 1e-12)
+            if (ws.U[i] < u_min - 1e-12 || ws.U[i] > u_max + 1e-12)
                 in_bounds = false;
         }
         check(in_bounds, "Solution within bounds");
@@ -262,23 +262,23 @@ static void test_large_problem() {
     check(ret == 0, "Cholesky factor succeeds (20x20)");
 
     // Tight bounds
-    double V_min = -2.0;
-    double V_max =  2.0;
+    double u_min = -2.0;
+    double u_max =  2.0;
 
     BoxQPWorkspace ws;
     std::memset(&ws, 0, sizeof(ws));
 
-    int iters = box_qp_solve(H, L, g, V_min, V_max, n, 50, ws);
+    int iters = box_qp_solve(H, L, g, u_min, u_max, n, 50, ws);
 
     char label[256];
 
     // (a) All elements within bounds
     bool in_bounds = true;
     for (int i = 0; i < n; i++) {
-        if (ws.U[i] < V_min - 1e-12 || ws.U[i] > V_max + 1e-12) {
+        if (ws.U[i] < u_min - 1e-12 || ws.U[i] > u_max + 1e-12) {
             in_bounds = false;
             std::printf("    U[%d] = %.10f out of bounds [%.1f, %.1f]\n",
-                        i, ws.U[i], V_min, V_max);
+                        i, ws.U[i], u_min, u_max);
         }
     }
     check(in_bounds, "All elements within bounds");
@@ -292,8 +292,8 @@ static void test_large_problem() {
     int n_free = 0, n_clamped = 0;
     double max_free_grad = 0.0;
     for (int i = 0; i < n; i++) {
-        bool at_lower = std::fabs(ws.U[i] - V_min) < 1e-10;
-        bool at_upper = std::fabs(ws.U[i] - V_max) < 1e-10;
+        bool at_lower = std::fabs(ws.U[i] - u_min) < 1e-10;
+        bool at_upper = std::fabs(ws.U[i] - u_max) < 1e-10;
         if (!at_lower && !at_upper) {
             // Free variable: gradient should be ~0
             n_free++;

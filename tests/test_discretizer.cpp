@@ -25,7 +25,8 @@ static ModelParams make_params()
     p.wheel_radius    = 0.05;
     p.lx              = 0.15;
     p.ly              = 0.15;
-    p.motor_kv        = 0.5;
+    p.stall_torque    = 6.0;
+    p.free_speed      = 435.0;
     compute_mecanum_jacobian(p);
     return p;
 }

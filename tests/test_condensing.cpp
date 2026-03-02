@@ -66,15 +66,16 @@ static void setup(TestSetup& ts) {
     p.wheel_radius     = 0.05;
     p.lx               = 0.15;
     p.ly               = 0.15;
-    p.motor_kv         = 0.5;
+    p.stall_torque     = 6.0;
+    p.free_speed       = 435.0;
     compute_mecanum_jacobian(p);
 
     // -- MPC config --
     MPCConfig& c = ts.config;
     c.N     = N_HORIZON;
     c.dt    = 0.02;
-    c.V_min = -12.0;
-    c.V_max = 12.0;
+    c.u_min = -1.0;
+    c.u_max = 1.0;
 
     // Q = diag(10, 10, 5, 1, 1, 0.5)
     std::memset(c.Q, 0, sizeof(c.Q));

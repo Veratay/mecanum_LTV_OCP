@@ -29,7 +29,8 @@ static ModelParams make_params()
     p.wheel_radius    = 0.05;
     p.lx              = 0.15;
     p.ly              = 0.15;
-    p.motor_kv        = 0.5;
+    p.stall_torque    = 6.0;
+    p.free_speed      = 435.0;
     compute_mecanum_jacobian(p);
     return p;
 }
@@ -39,8 +40,8 @@ static MPCConfig make_config()
     MPCConfig cfg{};
     cfg.N     = 10;
     cfg.dt    = 0.02;
-    cfg.V_min = -12.0;
-    cfg.V_max =  12.0;
+    cfg.u_min = -1.0;
+    cfg.u_max =  1.0;
 
     // Q = diag(10, 10, 5, 1, 1, 0.5), column-major NX*NX
     std::memset(cfg.Q, 0, sizeof(cfg.Q));
@@ -201,9 +202,9 @@ static bool test_online_at_reference()
 
     // All controls within bounds
     for (int j = 0; j < NU; ++j) {
-        if (sol.u0[j] < config.V_min - 1e-8 || sol.u0[j] > config.V_max + 1e-8) {
+        if (sol.u0[j] < config.u_min - 1e-8 || sol.u0[j] > config.u_max + 1e-8) {
             std::printf("\n  u0[%d] = %.4f out of bounds [%.1f, %.1f]",
-                        j, sol.u0[j], config.V_min, config.V_max);
+                        j, sol.u0[j], config.u_min, config.u_max);
             ok = false;
         }
     }
@@ -263,9 +264,9 @@ static bool test_online_with_perturbation()
 
     // All controls within bounds
     for (int j = 0; j < NU; ++j) {
-        if (sol.u0[j] < config.V_min - 1e-8 || sol.u0[j] > config.V_max + 1e-8) {
+        if (sol.u0[j] < config.u_min - 1e-8 || sol.u0[j] > config.u_max + 1e-8) {
             std::printf("\n  u0[%d] = %.4f out of bounds [%.1f, %.1f]",
-                        j, sol.u0[j], config.V_min, config.V_max);
+                        j, sol.u0[j], config.u_min, config.u_max);
             ok = false;
         }
     }
@@ -325,7 +326,7 @@ static bool test_closed_loop()
 
         // Check bounds on applied control
         for (int j = 0; j < NU; ++j) {
-            if (sol.u0[j] < config.V_min - 1e-8 || sol.u0[j] > config.V_max + 1e-8) {
+            if (sol.u0[j] < config.u_min - 1e-8 || sol.u0[j] > config.u_max + 1e-8) {
                 bounds_ok = false;
             }
         }
@@ -438,11 +439,11 @@ static bool test_serialization_roundtrip()
         }
 
         // Check config roundtrip
-        if (std::fabs(config_loaded.V_min - config.V_min) > 1e-14 ||
-            std::fabs(config_loaded.V_max - config.V_max) > 1e-14) {
-            std::printf("\n  Config mismatch: V_min=%.2f (expected %.2f), V_max=%.2f (expected %.2f)",
-                        config_loaded.V_min, config.V_min,
-                        config_loaded.V_max, config.V_max);
+        if (std::fabs(config_loaded.u_min - config.u_min) > 1e-14 ||
+            std::fabs(config_loaded.u_max - config.u_max) > 1e-14) {
+            std::printf("\n  Config mismatch: u_min=%.2f (expected %.2f), u_max=%.2f (expected %.2f)",
+                        config_loaded.u_min, config.u_min,
+                        config_loaded.u_max, config.u_max);
             ok = false;
         }
 

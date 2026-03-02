@@ -17,7 +17,8 @@ struct ModelParams {
     double damping_angular;   // N*m*s/rad
     double wheel_radius;      // m
     double lx, ly;            // half-distances center to wheel (m)
-    double motor_kv;          // V -> force constant (N/V through kinematic chain)
+    double stall_torque;      // motor stall torque (N*m)
+    double free_speed;        // motor no-load speed (rad/s)
     double J_mec[3 * NU];    // 3x4 mecanum Jacobian, column-major
 };
 
@@ -27,8 +28,8 @@ struct MPCConfig {
     double Q[NX * NX];       // state cost, column-major
     double R[NU * NU];       // input cost, column-major
     double Qf[NX * NX];      // terminal cost, column-major
-    double V_min;             // voltage lower bound (scalar, same for all wheels)
-    double V_max;             // voltage upper bound
+    double u_min;             // input lower bound (duty cycle, typically -1)
+    double u_max;             // input upper bound (duty cycle, typically +1)
     double dt;                // control timestep (s)
 };
 
@@ -71,6 +72,11 @@ struct BoxQPWorkspace {
     double temp[N_MAX * NU];
     int free_idx[N_MAX * NU];
     int clamped_idx[N_MAX * NU];
+
+    // Warm-start state (zero-init sets warm_valid = false)
+    double U_prev[N_MAX * NU];  // previous solution (shifted for warm-start)
+    int    prev_n_vars;          // n_vars of previous solve
+    bool   warm_valid;           // true if U_prev is usable
 };
 
 // Serialization header
@@ -81,8 +87,8 @@ struct MPCFileHeader {
     uint32_t N;           // horizon
     uint32_t nx;
     uint32_t nu;
-    double V_min;
-    double V_max;
+    double u_min;
+    double u_max;
 };
 
 constexpr uint32_t MPC_FILE_MAGIC = 0x4D504351;
