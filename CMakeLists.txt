@@ -152,8 +152,8 @@ target_link_libraries(mecanum_mpc PUBLIC blasfeo m)
 target_include_directories(mecanum_mpc PUBLIC include/)
 
 if(MPC_USE_NEON)
-    target_sources(mecanum_mpc PRIVATE src/neon_kernels.cpp)
-    target_compile_definitions(mecanum_mpc PUBLIC MPC_USE_NEON=1)
+    #target_sources(mecanum_mpc PRIVATE src/neon_kernels.cpp)
+    #target_compile_definitions(mecanum_mpc PUBLIC MPC_USE_NEON=1)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
         # AArch64: NEON always available
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm")
