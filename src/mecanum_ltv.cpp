@@ -12,6 +12,7 @@ MecanumLTV::MecanumLTV()
     , config_set_(false)
     , windows_(nullptr)
     , n_windows_(0)
+    , n_traj_windows_(0)
     , workspace_{}
 {
 }
@@ -61,6 +62,7 @@ int MecanumLTV::loadTrajectory(const double* samples, int n_samples, double dt)
     delete[] windows_;
     windows_ = nullptr;
     n_windows_ = 0;
+    n_traj_windows_ = 0;
     std::memset(&workspace_, 0, sizeof(workspace_));
 
     // Override config dt with the requested uniform dt
@@ -119,21 +121,55 @@ int MecanumLTV::loadTrajectory(const double* samples, int n_samples, double dt)
         std::memset(path[i].u_ref, 0, NU * sizeof(double));
     }
 
-    // Precompute all windows
-    windows_ = mpc_precompute_all(path, n_resampled, params_, config_, n_windows_);
+    // Pad path with N extra nodes at the final position with zero velocity,
+    // so the last resampled point still has a full horizon window ahead of it.
+    const int N = config_.N;
+    const int n_padded = n_resampled + N;
+    RefNode* padded_path = new RefNode[n_padded];
+    std::memcpy(padded_path, path, n_resampled * sizeof(RefNode));
+
+    RefNode hold_node = path[n_resampled - 1];
+    hold_node.x_ref[3] = 0.0;  // vx = 0
+    hold_node.x_ref[4] = 0.0;  // vy = 0
+    hold_node.x_ref[5] = 0.0;  // omega = 0
+    hold_node.omega = 0.0;
+    std::memset(hold_node.u_ref, 0, NU * sizeof(double));
+    for (int i = 0; i < N; ++i) {
+        hold_node.t = path[n_resampled - 1].t + (i + 1) * dt;
+        padded_path[n_resampled + i] = hold_node;
+    }
+
     delete[] path;
+
+    // Precompute all windows (now n_padded - N = n_resampled windows)
+    windows_ = mpc_precompute_all(padded_path, n_padded, params_, config_, n_windows_);
+    delete[] padded_path;
+
+    // Store the index of the last real trajectory window for clamping
+    n_traj_windows_ = n_resampled;
 
     return n_windows_;
 }
 
 int MecanumLTV::solve(int window_idx, const double x0[NX], double* u_out)
 {
-    if (!windows_ || window_idx < 0 || window_idx >= n_windows_)
+    if (!windows_ || window_idx < 0)
         return -1;
 
-    QPSolution sol = mpc_solve_online(windows_[window_idx], x0, config_, workspace_);
+    // Clamp to the last window once past the end of the trajectory.
+    // When clamped, freeze the warm-start so it doesn't shift.
+    bool clamped = (window_idx >= n_windows_);
+    int idx = clamped ? n_windows_ - 1 : window_idx;
 
-    const int n_vars = windows_[window_idx].n_vars;
+    if (clamped) {
+        // Invalidate warm-start so the solver does a cold start on the
+        // same final window every time, rather than shifting U_prev.
+        workspace_.warm_valid = false;
+    }
+
+    QPSolution sol = mpc_solve_online(windows_[idx], x0, config_, workspace_);
+
+    const int n_vars = windows_[idx].n_vars;
     std::memcpy(u_out, sol.U, n_vars * sizeof(double));
 
     return sol.n_iterations;

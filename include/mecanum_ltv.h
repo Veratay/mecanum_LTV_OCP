@@ -42,6 +42,7 @@ public:
     // ---- Accessors ----
 
     int numWindows() const { return n_windows_; }
+    int numTrajectoryWindows() const { return n_traj_windows_; }
     int horizonLength() const { return config_.N; }
     int numVars() const { return config_.N * NU; }
 
@@ -56,6 +57,7 @@ private:
 
     PrecomputedWindow* windows_;
     int n_windows_;
+    int n_traj_windows_;  // number of original trajectory points (before padding)
 
     BoxQPWorkspace workspace_;
 };
