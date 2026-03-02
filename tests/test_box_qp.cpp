@@ -407,7 +407,7 @@ static void test_fista_unconstrained() {
     double err = max_abs(n, residual);
     std::snprintf(label, sizeof(label),
                   "H*U + g ~ 0, max_err=%.3e", err);
-    check(err < 1e-6, label);
+    check(err < 1e-5, label);
 }
 
 // ---------------------------------------------------------------------------

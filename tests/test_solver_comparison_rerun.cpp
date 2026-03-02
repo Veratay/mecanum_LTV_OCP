@@ -369,7 +369,7 @@ int main(int argc, char** argv)
     }
 
     // Disturbance noise: pre-generate so every solver sees identical noise
-    constexpr double NOISE_STDDEV = 0.05;  // duty-cycle units (5% of full range)
+    constexpr double NOISE_STDDEV = 0.1;  // duty-cycle units (5% of full range)
     constexpr unsigned NOISE_SEED = 42;
     int n_sim = std::min(n_windows, n_path - 1);
 

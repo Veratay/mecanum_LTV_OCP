@@ -2,8 +2,6 @@
 #include "blas_dispatch.h"
 #include "cholesky.h"
 
-#include <cblas.h>
-
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -196,12 +194,11 @@ int fista_box_qp_solve(const double* H, const double* g,
     double t = 1.0;
 
     for (int k = 0; k < max_iter; ++k) {
-        // Compute step_size * (H * V + g) in one dsymv call:
+        // Compute step_size * (H * V + g) using dsymv:
         //   load g_scaled into U_old, then dsymv with alpha=step_size, beta=1.0
         //   gives step_size * H * V + step_size * g = step_size * grad
         std::memcpy(ws.U_old, g_scaled, static_cast<std::size_t>(n) * sizeof(double));
-        cblas_dsymv(CblasColMajor, CblasUpper, n, step_size, H, n,
-                    ws.V, 1, 1.0, ws.U_old, 1);
+        mpc_linalg::symv_full(n, step_size, H, ws.V, 1.0, ws.U_old);
         // ws.U_old now = step_size * (H * V + g)
 
         // Fused: projected step + convergence check + restart dot
@@ -257,7 +254,7 @@ bool check_box_kkt(const double* H, const double* g, const double* U,
 
     // grad = H * U + g  (H is symmetric, use dsymv)
     std::memcpy(grad_out, g, static_cast<std::size_t>(n) * sizeof(double));
-    cblas_dsymv(CblasColMajor, CblasUpper, n, 1.0, H, n, U, 1, 1.0, grad_out, 1);
+    mpc_linalg::symv_full(n, 1.0, H, U, 1.0, grad_out);
 
     for (int i = 0; i < n; ++i) {
         bool at_lower = (U[i] <= u_min + BOUND_TOL);

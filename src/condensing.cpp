@@ -2,7 +2,6 @@
 #include "cholesky.h"
 #include "blas_dispatch.h"
 
-#include <cblas.h>
 #include <cstring>
 #include <cmath>
 
@@ -60,11 +59,7 @@ void build_prediction_matrices(const double* A_list, const double* B_list, int N
         const double* Phi_prev = Phi_blocks + (k - 1) * nx2;
         double* Phi_cur = Phi_blocks + k * nx2;
 
-        cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
-                    NX, NX, NX,
-                    1.0, A_km1, NX,
-                    Phi_prev, NX,
-                    0.0, Phi_cur, NX);
+        mpc_linalg::gemm_full(NX, NX, NX, 1.0, A_km1, NX, Phi_prev, NX, 0.0, Phi_cur, NX);
     }
 
     // Zero-initialize Gamma
@@ -92,11 +87,7 @@ void build_prediction_matrices(const double* A_list, const double* B_list, int N
             double* Gk_j = Gamma + k * NX + (size_t)gamma_rows * j * NU;
 
             // A_{k-1} (NX x NX) * Gamma[k-1,j] (NX x NU) -> Gamma[k,j] (NX x NU)
-            cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
-                        NX, NU, NX,
-                        1.0, A_km1, NX,
-                        Gkm1_j, gamma_rows,
-                        0.0, Gk_j, gamma_rows);
+            mpc_linalg::gemm_full(NX, NU, NX, 1.0, A_km1, NX, Gkm1_j, gamma_rows, 0.0, Gk_j, gamma_rows);
         }
     }
 }
@@ -130,18 +121,10 @@ void form_hessian(const double* Gamma, const double* Q, const double* Qf,
                 const double* Qk = (k < N) ? Q : Qf;
 
                 // Step 1: temp (NX x NU) = Qk (NX x NX) * Gamma[k,j] (NX x NU)
-                cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
-                            NX, NU, NX,
-                            1.0, Qk, NX,
-                            Gk_j, gamma_rows,
-                            0.0, temp, NX);
+                mpc_linalg::gemm_full(NX, NU, NX, 1.0, Qk, NX, Gk_j, gamma_rows, 0.0, temp, NX);
 
                 // Step 2: H_ij (NU x NU) += Gamma[k,i]^T (NU x NX) * temp (NX x NU)
-                cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans,
-                            NU, NU, NX,
-                            1.0, Gk_i, gamma_rows,
-                            temp, NX,
-                            1.0, H_ij, n_vars);
+                mpc_linalg::gemm_atb_full(NU, NU, NX, 1.0, Gk_i, gamma_rows, temp, NX, 1.0, H_ij, n_vars);
             }
 
             // Add R on the diagonal blocks
@@ -207,19 +190,11 @@ void form_gradient_matrices(const double* Gamma, const double* Phi_blocks,
             const double* Qk = (k < N) ? Q : Qf;
 
             // Step 1: temp_qphi (NX x NX) = Qk * Phi[k]
-            cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
-                        NX, NX, NX,
-                        1.0, Qk, NX,
-                        Phi_k, NX,
-                        0.0, temp_qphi, NX);
+            mpc_linalg::gemm_full(NX, NX, NX, 1.0, Qk, NX, Phi_k, NX, 0.0, temp_qphi, NX);
 
             // Step 2: F_j (NU x NX) += Gamma[k,j]^T (NU x NX) * temp_qphi (NX x NX)
             // F_j is stored with leading dimension n_vars (rows of F)
-            cblas_dgemm(CblasColMajor, CblasTrans, CblasNoTrans,
-                        NU, NX, NX,
-                        1.0, Gk_j, gamma_rows,
-                        temp_qphi, NX,
-                        1.0, F_j, n_vars);
+            mpc_linalg::gemm_atb_full(NU, NX, NX, 1.0, Gk_j, gamma_rows, temp_qphi, NX, 1.0, F_j, n_vars);
         }
     }
 
@@ -271,9 +246,6 @@ void condense_window(const double* A_list, const double* B_list,
     }
 
     // f_const = -H * u_ref_stacked  via  f_const = H * u_ref_stacked, then negate
-    cblas_dgemv(CblasColMajor, CblasNoTrans,
-                n_vars, n_vars,
-                -1.0, window.H, n_vars,
-                u_ref_stacked, 1,
-                0.0, window.f_const, 1);
+    mpc_linalg::gemv(n_vars, n_vars, window.H, u_ref_stacked, window.f_const);
+    mpc_linalg::scal(n_vars, -1.0, window.f_const);
 }

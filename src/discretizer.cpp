@@ -2,7 +2,6 @@
 #include "mecanum_model.h"
 #include "blas_dispatch.h"
 
-#include <cblas.h>
 #include <cstring>
 #include <cmath>
 
@@ -70,18 +69,10 @@ void augmented_rhs(double t, const double* Psi, const InterpData& interp,
     // Bottom 4 rows of Psi_dot remain zero.
 
     // Ac(6x6) * Psi_top(6x10) -> Psi_dot_top(6x10)
-    cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
-                6, N_AUG, 6,
-                1.0, Ac, NX,
-                Psi, N_AUG,
-                0.0, Psi_dot, N_AUG);
+    mpc_linalg::gemm_full(6, N_AUG, 6, 1.0, Ac, NX, Psi, N_AUG, 0.0, Psi_dot, N_AUG);
 
     // += Bc(6x4) * Psi_bottom(4x10) -> accumulate into Psi_dot_top(6x10)
-    cblas_dgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
-                6, N_AUG, 4,
-                1.0, Bc, NX,
-                Psi + 6, N_AUG,
-                1.0, Psi_dot, N_AUG);
+    mpc_linalg::gemm_full(6, N_AUG, 4, 1.0, Bc, NX, Psi + 6, N_AUG, 1.0, Psi_dot, N_AUG);
 }
 
 // ---------------------------------------------------------------------------

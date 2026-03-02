@@ -34,8 +34,16 @@ void gemm_full(int m, int n, int k, double alpha, const double* A, int lda,
 void gemm_atb(int m, int n, int k, const double* A, int lda,
               const double* B, int ldb, double* C, int ldc);
 
+// C = alpha * A' * B + beta * C
+void gemm_atb_full(int m, int n, int k, double alpha, const double* A, int lda,
+                   const double* B, int ldb, double beta, double* C, int ldc);
+
 // y = A * x,  A is n x n symmetric (upper triangle stored), column-major
 void symv(int n, const double* A, const double* x, double* y);
+
+// y = alpha * A * x + beta * y,  A is n x n symmetric (upper triangle stored)
+void symv_full(int n, double alpha, const double* A, const double* x,
+               double beta, double* y);
 
 // Scale vector: x = alpha * x
 void scal(int n, double alpha, double* x);
