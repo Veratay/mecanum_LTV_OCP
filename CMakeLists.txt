@@ -145,6 +145,7 @@ add_library(mecanum_mpc STATIC
     src/mpc_online.cpp
     src/blas_dispatch.cpp
     src/mpc_solver_dispatch.cpp
+    src/mecanum_ltv.cpp
 )
 target_link_libraries(mecanum_mpc PUBLIC blasfeo m)
 target_include_directories(mecanum_mpc PUBLIC include/)
@@ -177,6 +178,15 @@ if(MPC_USE_QPOASES)
     target_include_directories(mecanum_mpc PUBLIC
         ${EXTERNAL_INSTALL_PREFIX}/include
     )
+endif()
+
+# ---------------------------------------------------------------------------
+# JNI shared library (Android cross-compilation only)
+# ---------------------------------------------------------------------------
+if(CMAKE_SYSTEM_NAME STREQUAL "Android")
+    add_library(mecanum_ltv_jni SHARED src/mecanum_ltv_jni.cpp)
+    target_link_libraries(mecanum_ltv_jni PRIVATE mecanum_mpc)
+    target_link_options(mecanum_ltv_jni PRIVATE -Wl,--gc-sections)
 endif()
 
 # ---------------------------------------------------------------------------
