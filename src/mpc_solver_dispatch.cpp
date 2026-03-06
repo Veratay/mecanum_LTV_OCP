@@ -13,15 +13,8 @@ void solver_context_init(SolverContext& ctx, int n)
     std::memset(&ctx.box_ws, 0, sizeof(ctx.box_ws));
 
 #ifdef MPC_USE_HPIPM
-    std::memset(&ctx.hpipm_ws, 0, sizeof(ctx.hpipm_ws));
-    hpipm_workspace_init(ctx.hpipm_ws, n);
     std::memset(&ctx.hpipm_ocp_ws, 0, sizeof(ctx.hpipm_ocp_ws));
     // OCP workspace is lazily initialized on first use
-#endif
-
-#ifdef MPC_USE_QPOASES
-    std::memset(&ctx.qpoases_ws, 0, sizeof(ctx.qpoases_ws));
-    qpoases_workspace_init(ctx.qpoases_ws, n);
 #endif
 
     (void)n;  // suppress unused warning when no optional solvers
@@ -30,12 +23,7 @@ void solver_context_init(SolverContext& ctx, int n)
 void solver_context_free(SolverContext& ctx)
 {
 #ifdef MPC_USE_HPIPM
-    hpipm_workspace_free(ctx.hpipm_ws);
     hpipm_ocp_workspace_free(ctx.hpipm_ocp_ws);
-#endif
-
-#ifdef MPC_USE_QPOASES
-    qpoases_workspace_free(ctx.qpoases_ws);
 #endif
 
     (void)ctx;
@@ -108,26 +96,6 @@ QPSolution mpc_solve_with_solver(const PrecomputedWindow& window,
         }
         break;
     }
-
-#ifdef MPC_USE_HPIPM
-    case QpSolverType::HPIPM: {
-        const double* warm = have_warm ? ws.U : nullptr;
-        n_iter = hpipm_box_qp_solve(window.H, ws.grad,
-                                    config.u_min, config.u_max,
-                                    n_vars, warm, ws.U, ctx.hpipm_ws);
-        break;
-    }
-#endif
-
-#ifdef MPC_USE_QPOASES
-    case QpSolverType::QPOASES: {
-        (void)have_warm;  // qpOASES does its own warm-start via hotstart
-        n_iter = qpoases_box_qp_solve(window.H, ws.grad,
-                                      config.u_min, config.u_max,
-                                      n_vars, nullptr, ws.U, ctx.qpoases_ws);
-        break;
-    }
-#endif
 
     case QpSolverType::HPIPM_OCP:
         // HPIPM OCP is called directly from heading_lookup_online, not through

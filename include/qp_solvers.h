@@ -7,8 +7,6 @@
 // ---------------------------------------------------------------------------
 enum class QpSolverType {
     FISTA,
-    HPIPM,
-    QPOASES,
     HPIPM_OCP
 };
 
@@ -16,24 +14,6 @@ enum class QpSolverType {
 // Optional solver workspaces (conditionally compiled)
 // ---------------------------------------------------------------------------
 #ifdef MPC_USE_HPIPM
-
-struct HpipmWorkspace {
-    void* memory;       // single aligned allocation for all HPIPM/BLASFEO structs
-    int memory_size;
-    int n_alloc;        // dimension this workspace was allocated for
-};
-
-void hpipm_workspace_init(HpipmWorkspace& ws, int n);
-void hpipm_workspace_free(HpipmWorkspace& ws);
-
-// Solve box-constrained QP using HPIPM dense interior-point method.
-// H: n x n Hessian (column-major, symmetric), g: gradient, lb/ub: bounds
-// U_warm: warm-start primal (may be null), U_out: solution output
-// Returns IPM iteration count.
-int hpipm_box_qp_solve(const double* H, const double* g,
-                       double u_min, double u_max, int n,
-                       const double* U_warm, double* U_out,
-                       HpipmWorkspace& ws);
 
 struct HpipmOcpWorkspace {
     void* memory;       // single aligned allocation for all HPIPM OCP structs
@@ -57,25 +37,6 @@ int hpipm_ocp_qp_solve(const double* A_list, const double* B_list,
 
 #endif // MPC_USE_HPIPM
 
-#ifdef MPC_USE_QPOASES
-
-struct QpoasesWorkspace {
-    void* qp;           // opaque QProblemB pointer
-    int n_alloc;        // dimension this workspace was allocated for
-};
-
-void qpoases_workspace_init(QpoasesWorkspace& ws, int n);
-void qpoases_workspace_free(QpoasesWorkspace& ws);
-
-// Solve box-constrained QP using qpOASES active-set method.
-// Returns number of working set recalculations.
-int qpoases_box_qp_solve(const double* H, const double* g,
-                          double u_min, double u_max, int n,
-                          const double* U_warm, double* U_out,
-                          QpoasesWorkspace& ws);
-
-#endif // MPC_USE_QPOASES
-
 // ---------------------------------------------------------------------------
 // Unified solver context — holds workspaces for all enabled solvers
 // ---------------------------------------------------------------------------
@@ -83,11 +44,7 @@ struct SolverContext {
     BoxQPWorkspace box_ws;     // always available (FISTA)
 
 #ifdef MPC_USE_HPIPM
-    HpipmWorkspace hpipm_ws;
     HpipmOcpWorkspace hpipm_ocp_ws;
-#endif
-#ifdef MPC_USE_QPOASES
-    QpoasesWorkspace qpoases_ws;
 #endif
 };
 
@@ -111,18 +68,6 @@ inline bool solver_available(QpSolverType type) {
     switch (type) {
         case QpSolverType::FISTA:
             return true;
-        case QpSolverType::HPIPM:
-#ifdef MPC_USE_HPIPM
-            return true;
-#else
-            return false;
-#endif
-        case QpSolverType::QPOASES:
-#ifdef MPC_USE_QPOASES
-            return true;
-#else
-            return false;
-#endif
         case QpSolverType::HPIPM_OCP:
 #ifdef MPC_USE_HPIPM
             return true;
@@ -136,8 +81,6 @@ inline bool solver_available(QpSolverType type) {
 inline const char* solver_name(QpSolverType type) {
     switch (type) {
         case QpSolverType::FISTA:      return "fista";
-        case QpSolverType::HPIPM:      return "hpipm";
-        case QpSolverType::QPOASES:    return "qpoases";
         case QpSolverType::HPIPM_OCP:  return "hpipm_ocp";
     }
     return "unknown";

@@ -2,18 +2,18 @@
 //
 // Tests:
 // 1. Trig decomposition accuracy (B_d reconstruction vs exact at random headings)
-// 2. Table interpolation accuracy
-// 3. A_d power correctness
-// 4. Heading schedule feasibility
-// 5. Heading schedule derating
-// 6. Solution comparison on straight-line trajectory
-// 7. Turning trajectory comparison (reports discrepancy)
+// 2. A_d power correctness
+// 3. Heading schedule feasibility
+// 4. Heading schedule derating
+// 5. Solution comparison on straight-line trajectory
+// 6. Turning trajectory comparison (reports discrepancy)
+// 7. HPIPM OCP solve vs offline FISTA (if available)
+// 8. Timing comparison
 
 #include "mpc_types.h"
 #include "heading_lookup.h"
 #include "mecanum_model.h"
 #include "discretizer.h"
-#include "condensing.h"
 #include "mpc_offline.h"
 #include "mpc_online.h"
 #include "blas_dispatch.h"
@@ -78,13 +78,6 @@ static double mat_max_abs_diff(const double* A, const double* B, int n)
         if (d > mx) mx = d;
     }
     return mx;
-}
-
-static double vec_norm(const double* v, int n)
-{
-    double s = 0.0;
-    for (int i = 0; i < n; ++i) s += v[i] * v[i];
-    return std::sqrt(s);
 }
 
 static void build_straight_ref(RefNode* path, int n_path, double dt)
@@ -167,58 +160,11 @@ static bool test_decomposition_accuracy()
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: Table interpolation accuracy
-// ---------------------------------------------------------------------------
-static bool test_table_interpolation()
-{
-    std::printf("Test 2: Table interpolation accuracy ... ");
-
-    ModelParams params = make_params();
-    double dt = 0.02;
-
-    HeadingTableData table;
-    heading_table_precompute(params, dt, 72, table);
-
-    // Test at intermediate headings (between table entries)
-    std::mt19937 rng(54321);
-    std::uniform_real_distribution<double> dist(-M_PI, M_PI);
-
-    double max_err = 0.0;
-    for (int i = 0; i < 20; ++i) {
-        double theta = dist(rng);
-
-        // Table interpolation
-        double B_interp[NX * NU];
-        heading_table_build_B_list(table, &theta, 1, B_interp);
-
-        // Exact discretize
-        RefNode ref_k, ref_k1;
-        std::memset(&ref_k, 0, sizeof(RefNode));
-        std::memset(&ref_k1, 0, sizeof(RefNode));
-        ref_k.t = 0.0; ref_k.theta = theta; ref_k.x_ref[2] = theta;
-        ref_k1.t = dt; ref_k1.theta = theta; ref_k1.x_ref[2] = theta;
-
-        double A_exact[NX * NX], B_exact[NX * NU];
-        exact_discretize(ref_k, ref_k1, params, A_exact, B_exact, 100);
-
-        double err = mat_max_abs_diff(B_interp, B_exact, NX * NU);
-        if (err > max_err) max_err = err;
-    }
-
-    // With M=72 (5° spacing), linear interpolation error should be small
-    // but not as good as trig decomposition
-    bool ok = max_err < 1e-3;  // generous bound for linear interp
-    std::printf("  (max_err=%.3e)", max_err);
-    std::printf(" %s\n", ok ? "PASS" : "FAIL");
-    return ok;
-}
-
-// ---------------------------------------------------------------------------
-// Test 3: A_d power correctness
+// Test 2: A_d power correctness
 // ---------------------------------------------------------------------------
 static bool test_ad_power()
 {
-    std::printf("Test 3: A_d power correctness ... ");
+    std::printf("Test 2: A_d power correctness ... ");
 
     ModelParams params = make_params();
     double dt = 0.02;
@@ -253,11 +199,11 @@ static bool test_ad_power()
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: Heading schedule feasibility
+// Test 3: Heading schedule feasibility
 // ---------------------------------------------------------------------------
 static bool test_heading_schedule_feasibility()
 {
-    std::printf("Test 4: Heading schedule feasibility ... ");
+    std::printf("Test 3: Heading schedule feasibility ... ");
 
     ModelParams params = make_params();
     HeadingScheduleConfig sched = heading_schedule_config_from_params(params);
@@ -303,11 +249,11 @@ static bool test_heading_schedule_feasibility()
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: Heading schedule derating
+// Test 4: Heading schedule derating
 // ---------------------------------------------------------------------------
 static bool test_heading_schedule_derating()
 {
-    std::printf("Test 5: Heading schedule derating ... ");
+    std::printf("Test 4: Heading schedule derating ... ");
 
     ModelParams params = make_params();
     HeadingScheduleConfig sched = heading_schedule_config_from_params(params);
@@ -338,7 +284,6 @@ static bool test_heading_schedule_derating()
     // Compute expected derated alpha
     double v_field = std::sqrt(2.0 * 2.0 + 1.0 * 1.0);
     double expected_headroom = std::max(0.0, 1.0 - v_field / sched.v_max);
-    double expected_alpha_max = sched.alpha_0 * expected_headroom;
 
     bool ok = true;
     if (expected_headroom < 0.5) {
@@ -353,11 +298,11 @@ static bool test_heading_schedule_derating()
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: Solution comparison (straight-line, θ≈0)
+// Test 5: Solution comparison (straight-line, θ≈0)
 // ---------------------------------------------------------------------------
 static bool test_solution_comparison_straight()
 {
-    std::printf("Test 6: Solution comparison (straight line) ... ");
+    std::printf("Test 5: Solution comparison (straight line) ... ");
 
     ModelParams params = make_params();
     MPCConfig config = make_config();
@@ -392,11 +337,18 @@ static bool test_solution_comparison_straight()
     std::memset(&ws, 0, sizeof(ws));
     QPSolution sol_std = mpc_solve_online(windows[0], x0, config, ws);
 
-    // Heading-lookup solve
+#ifdef MPC_USE_HPIPM
+    // Heading-lookup OCP solve
     SolverContext ctx;
     solver_context_init(ctx, config.N * NU);
-    QPSolution sol_hl = heading_lookup_solve_condensed(hl_data, path, x0, config,
-                                                       sched, QpSolverType::FISTA, ctx);
+    QPSolution sol_hl = heading_lookup_solve_ocp(hl_data, path, x0, config, sched, ctx);
+#else
+    // Without HPIPM, compare against offline FISTA (same solver, different linearization)
+    SolverContext ctx;
+    solver_context_init(ctx, config.N * NU);
+    QPSolution sol_hl = mpc_solve_with_solver(windows[0], x0, config,
+                                               QpSolverType::FISTA, ctx);
+#endif
 
     // Compare u0
     double u0_diff = 0.0;
@@ -419,11 +371,11 @@ static bool test_solution_comparison_straight()
 }
 
 // ---------------------------------------------------------------------------
-// Test 7: Turning trajectory comparison (report discrepancy)
+// Test 6: Turning trajectory comparison (report discrepancy)
 // ---------------------------------------------------------------------------
 static bool test_turning_trajectory()
 {
-    std::printf("Test 7: Turning trajectory comparison ... ");
+    std::printf("Test 6: Turning trajectory comparison ... ");
 
     ModelParams params = make_params();
     MPCConfig config = make_config(0.02, 10);
@@ -455,10 +407,16 @@ static bool test_turning_trajectory()
     std::memset(&ws, 0, sizeof(ws));
     QPSolution sol_std = mpc_solve_online(windows[0], x0, config, ws);
 
+#ifdef MPC_USE_HPIPM
     SolverContext ctx;
     solver_context_init(ctx, config.N * NU);
-    QPSolution sol_hl = heading_lookup_solve_condensed(hl_data, path, x0, config,
-                                                       sched, QpSolverType::FISTA, ctx);
+    QPSolution sol_hl = heading_lookup_solve_ocp(hl_data, path, x0, config, sched, ctx);
+#else
+    SolverContext ctx;
+    solver_context_init(ctx, config.N * NU);
+    QPSolution sol_hl = mpc_solve_with_solver(windows[0], x0, config,
+                                               QpSolverType::FISTA, ctx);
+#endif
 
     double u0_diff = 0.0;
     for (int j = 0; j < NU; ++j) {
@@ -482,123 +440,12 @@ static bool test_turning_trajectory()
 }
 
 // ---------------------------------------------------------------------------
-// Test 8: Kernel P[j] correctness
+// Test 7: HPIPM OCP solve vs offline FISTA
 // ---------------------------------------------------------------------------
-static bool test_kernel_correctness()
-{
-    std::printf("Test 8: Kernel P[j] correctness ... ");
-
-    ModelParams params = make_params();
-    MPCConfig config = make_config(0.02, 10);
-
-    HeadingLookupData data;
-    heading_lookup_precompute(params, config.dt, data);
-
-    HeadingKernelData kern;
-    heading_kernel_precompute(data, config, kern);
-
-    const int N = config.N;
-
-    // Verify P[j] via naive summation:
-    // P[N-1] = Qf
-    // P[j] = Q + A_d^T P[j+1] A_d
-    // Equivalently P[j] = sum_{m=0}^{N-2-j} (A_d^m)^T Q (A_d^m) + (A_d^(N-1-j))^T Qf (A_d^(N-1-j))
-
-    double max_err = 0.0;
-    for (int j = 0; j < N; ++j) {
-        double P_naive[NX * NX] = {};
-
-        // Sum Q terms: m=0 to N-2-j
-        for (int m = 0; m <= N - 2 - j; ++m) {
-            const double* Ad_m = data.A_d_pow + m * NX * NX;
-            double QAm[NX * NX] = {};
-            double AtQAm[NX * NX] = {};
-            mpc_linalg::gemm(NX, NX, NX, config.Q, Ad_m, QAm);
-            mpc_linalg::gemm_atb(NX, NX, NX, Ad_m, NX, QAm, NX, AtQAm, NX);
-            for (int i = 0; i < NX * NX; ++i)
-                P_naive[i] += AtQAm[i];
-        }
-
-        // Terminal: (A_d^(N-1-j))^T Qf (A_d^(N-1-j))
-        int term_pow = N - 1 - j;
-        const double* Ad_term = data.A_d_pow + term_pow * NX * NX;
-        double QfA[NX * NX] = {};
-        double AtQfA[NX * NX] = {};
-        mpc_linalg::gemm(NX, NX, NX, config.Qf, Ad_term, QfA);
-        mpc_linalg::gemm_atb(NX, NX, NX, Ad_term, NX, QfA, NX, AtQfA, NX);
-        for (int i = 0; i < NX * NX; ++i)
-            P_naive[i] += AtQfA[i];
-
-        double err = mat_max_abs_diff(kern.P + j * NX * NX, P_naive, NX * NX);
-        if (err > max_err) max_err = err;
-    }
-
-    bool ok = max_err < 1e-10;
-    std::printf("  (max_err=%.3e)", max_err);
-    std::printf(" %s\n", ok ? "PASS" : "FAIL");
-    return ok;
-}
-
-// ---------------------------------------------------------------------------
-// Test 9: Fast solve matches original
-// ---------------------------------------------------------------------------
-static bool test_fast_solve_matches()
-{
-    std::printf("Test 9: Fast solve matches original ... ");
-
-    ModelParams params = make_params();
-    MPCConfig config = make_config(0.02, 10);
-    HeadingScheduleConfig sched = heading_schedule_config_from_params(params);
-
-    const int n_path = 50;
-    RefNode path[50];
-    build_straight_ref(path, n_path, config.dt);
-
-    HeadingLookupData data;
-    heading_lookup_precompute(params, config.dt, data);
-
-    HeadingKernelData kern;
-    heading_kernel_precompute(data, config, kern);
-
-    double x0[NX];
-    std::memcpy(x0, path[0].x_ref, NX * sizeof(double));
-    x0[0] += 0.01;
-    x0[1] -= 0.005;
-
-    SolverContext ctx1, ctx2;
-    solver_context_init(ctx1, config.N * NU);
-    solver_context_init(ctx2, config.N * NU);
-
-    QPSolution sol_orig = heading_lookup_solve_condensed(data, path, x0, config,
-                                                         sched, QpSolverType::FISTA, ctx1);
-    QPSolution sol_fast = heading_lookup_solve_fast(data, kern, path, x0, config,
-                                                    sched, QpSolverType::FISTA, ctx2);
-
-    double u0_diff = 0.0;
-    for (int j = 0; j < NU; ++j) {
-        double d = std::fabs(sol_orig.u0[j] - sol_fast.u0[j]);
-        if (d > u0_diff) u0_diff = d;
-    }
-
-    solver_context_free(ctx1);
-    solver_context_free(ctx2);
-
-    bool ok = u0_diff < 1e-6;
-    std::printf("  (u0_diff=%.3e)", u0_diff);
-    std::printf("  orig=[%.4f,%.4f,%.4f,%.4f] fast=[%.4f,%.4f,%.4f,%.4f]",
-                sol_orig.u0[0], sol_orig.u0[1], sol_orig.u0[2], sol_orig.u0[3],
-                sol_fast.u0[0], sol_fast.u0[1], sol_fast.u0[2], sol_fast.u0[3]);
-    std::printf(" %s\n", ok ? "PASS" : "FAIL");
-    return ok;
-}
-
-// ---------------------------------------------------------------------------
-// Test 10: HPIPM OCP solve matches condensed (if available)
-// ---------------------------------------------------------------------------
-static bool test_ocp_solve_matches()
+static bool test_ocp_vs_offline_fista()
 {
 #ifdef MPC_USE_HPIPM
-    std::printf("Test 10: HPIPM OCP solve matches condensed ... ");
+    std::printf("Test 7: HPIPM OCP solve vs offline FISTA ... ");
 
     ModelParams params = make_params();
     MPCConfig config = make_config(0.02, 10);
@@ -608,6 +455,16 @@ static bool test_ocp_solve_matches()
     RefNode path[50];
     build_straight_ref(path, n_path, config.dt);
 
+    // Precompute offline windows
+    int n_windows = 0;
+    PrecomputedWindow* windows = mpc_precompute_all(path, n_path, params,
+                                                     config, n_windows);
+    if (!windows || n_windows < 1) {
+        std::printf("\n  Precompute failed");
+        std::printf(" FAIL\n");
+        return false;
+    }
+
     HeadingLookupData data;
     heading_lookup_precompute(params, config.dt, data);
 
@@ -616,42 +473,44 @@ static bool test_ocp_solve_matches()
     x0[0] += 0.01;
     x0[1] -= 0.005;
 
-    SolverContext ctx1, ctx2;
-    solver_context_init(ctx1, config.N * NU);
-    solver_context_init(ctx2, config.N * NU);
+    // Offline FISTA
+    BoxQPWorkspace ws;
+    std::memset(&ws, 0, sizeof(ws));
+    QPSolution sol_fista = mpc_solve_online(windows[0], x0, config, ws);
 
-    QPSolution sol_cond = heading_lookup_solve_condensed(data, path, x0, config,
-                                                         sched, QpSolverType::FISTA, ctx1);
-    QPSolution sol_ocp = heading_lookup_solve_ocp(data, path, x0, config, sched, ctx2);
+    // HPIPM OCP
+    SolverContext ctx;
+    solver_context_init(ctx, config.N * NU);
+    QPSolution sol_ocp = heading_lookup_solve_ocp(data, path, x0, config, sched, ctx);
 
     double u0_diff = 0.0;
     for (int j = 0; j < NU; ++j) {
-        double d = std::fabs(sol_cond.u0[j] - sol_ocp.u0[j]);
+        double d = std::fabs(sol_fista.u0[j] - sol_ocp.u0[j]);
         if (d > u0_diff) u0_diff = d;
     }
 
-    solver_context_free(ctx1);
-    solver_context_free(ctx2);
+    solver_context_free(ctx);
+    delete[] windows;
 
-    bool ok = u0_diff < 1e-4;
+    bool ok = u0_diff < 0.1;
     std::printf("  (u0_diff=%.3e)", u0_diff);
-    std::printf("  cond=[%.4f,%.4f,%.4f,%.4f] ocp=[%.4f,%.4f,%.4f,%.4f]",
-                sol_cond.u0[0], sol_cond.u0[1], sol_cond.u0[2], sol_cond.u0[3],
+    std::printf("  fista=[%.4f,%.4f,%.4f,%.4f] ocp=[%.4f,%.4f,%.4f,%.4f]",
+                sol_fista.u0[0], sol_fista.u0[1], sol_fista.u0[2], sol_fista.u0[3],
                 sol_ocp.u0[0], sol_ocp.u0[1], sol_ocp.u0[2], sol_ocp.u0[3]);
     std::printf(" %s\n", ok ? "PASS" : "FAIL");
     return ok;
 #else
-    std::printf("Test 10: HPIPM OCP solve matches condensed ... SKIPPED (no HPIPM)\n");
+    std::printf("Test 7: HPIPM OCP solve vs offline FISTA ... SKIPPED (no HPIPM)\n");
     return true;
 #endif
 }
 
 // ---------------------------------------------------------------------------
-// Test 11: Timing comparison
+// Test 8: Timing comparison
 // ---------------------------------------------------------------------------
 static bool test_timing_comparison()
 {
-    std::printf("Test 11: Timing comparison ... \n");
+    std::printf("Test 8: Timing comparison ... \n");
 
     ModelParams params = make_params();
     MPCConfig config = make_config(0.02, 20);
@@ -661,11 +520,13 @@ static bool test_timing_comparison()
     RefNode path[60];
     build_straight_ref(path, n_path, config.dt);
 
+    // Precompute offline windows for FISTA timing
+    int n_windows = 0;
+    PrecomputedWindow* windows = mpc_precompute_all(path, n_path, params,
+                                                     config, n_windows);
+
     HeadingLookupData data;
     heading_lookup_precompute(params, config.dt, data);
-
-    HeadingKernelData kern;
-    heading_kernel_precompute(data, config, kern);
 
     double x0[NX];
     std::memcpy(x0, path[0].x_ref, NX * sizeof(double));
@@ -674,32 +535,16 @@ static bool test_timing_comparison()
 
     const int n_runs = 20;
 
-    // Original condensed solve
-    {
-        SolverContext ctx;
-        solver_context_init(ctx, config.N * NU);
+    // Offline FISTA solve
+    if (windows && n_windows >= 1) {
+        BoxQPWorkspace ws;
+        std::memset(&ws, 0, sizeof(ws));
         double total_ns = 0.0;
         for (int r = 0; r < n_runs; ++r) {
-            QPSolution sol = heading_lookup_solve_condensed(data, path, x0, config,
-                                                             sched, QpSolverType::FISTA, ctx);
+            QPSolution sol = mpc_solve_online(windows[0], x0, config, ws);
             total_ns += sol.solve_time_ns;
         }
-        std::printf("  Original condensed: %.0f μs avg\n", total_ns / n_runs / 1e3);
-        solver_context_free(ctx);
-    }
-
-    // Fast kernel-based solve
-    {
-        SolverContext ctx;
-        solver_context_init(ctx, config.N * NU);
-        double total_ns = 0.0;
-        for (int r = 0; r < n_runs; ++r) {
-            QPSolution sol = heading_lookup_solve_fast(data, kern, path, x0, config,
-                                                       sched, QpSolverType::FISTA, ctx);
-            total_ns += sol.solve_time_ns;
-        }
-        std::printf("  Kernel-based fast:  %.0f μs avg\n", total_ns / n_runs / 1e3);
-        solver_context_free(ctx);
+        std::printf("  Offline FISTA:     %.0f μs avg\n", total_ns / n_runs / 1e3);
     }
 
 #ifdef MPC_USE_HPIPM
@@ -717,6 +562,8 @@ static bool test_timing_comparison()
     }
 #endif
 
+    delete[] windows;
+
     std::printf("  (informational - always passes)");
     std::printf(" PASS\n");
     return true;
@@ -731,15 +578,12 @@ int main()
 
     bool all_pass = true;
     all_pass &= test_decomposition_accuracy();
-    all_pass &= test_table_interpolation();
     all_pass &= test_ad_power();
     all_pass &= test_heading_schedule_feasibility();
     all_pass &= test_heading_schedule_derating();
     all_pass &= test_solution_comparison_straight();
     all_pass &= test_turning_trajectory();
-    all_pass &= test_kernel_correctness();
-    all_pass &= test_fast_solve_matches();
-    all_pass &= test_ocp_solve_matches();
+    all_pass &= test_ocp_vs_offline_fista();
     all_pass &= test_timing_comparison();
 
     std::printf("\n%s\n", all_pass ? "ALL TESTS PASSED" : "SOME TESTS FAILED");

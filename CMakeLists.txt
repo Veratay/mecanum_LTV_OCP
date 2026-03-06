@@ -7,8 +7,7 @@ include(ExternalProject)
 option(MPC_USE_NEON "Use custom NEON kernels for online linear algebra" OFF)
 option(MPC_BUILD_JNI "Build JNI shared library (requires JDK)" OFF)
 option(MPC_ENABLE_RERUN "Enable Rerun visualization for tests" OFF)
-option(MPC_USE_HPIPM "Enable HPIPM dense QP solver" OFF)
-option(MPC_USE_QPOASES "Enable qpOASES QP solver" OFF)
+option(MPC_USE_HPIPM "Enable HPIPM OCP solver" OFF)
 
 set(BLASFEO_TARGET "GENERIC" CACHE STRING "BLASFEO target architecture")
 
@@ -109,31 +108,6 @@ if(MPC_USE_HPIPM)
     add_dependencies(hpipm hpipm_ext)
 endif()
 
-if(MPC_USE_QPOASES)
-    ExternalProject_Add(qpoases_ext
-        GIT_REPOSITORY https://github.com/coin-or/qpOASES.git
-        GIT_TAG        master
-        GIT_SHALLOW    TRUE
-        CMAKE_ARGS
-            -DCMAKE_INSTALL_PREFIX=${EXTERNAL_INSTALL_PREFIX}
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-            -DBUILD_SHARED_LIBS=OFF
-            -DQPOASES_BUILD_EXAMPLES=OFF
-            -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
-            "-DCMAKE_C_FLAGS=${EXTERNAL_C_FLAGS}"
-            "-DCMAKE_CXX_FLAGS=${EXTERNAL_CXX_FLAGS}"
-            ${EXTERNAL_ANDROID_ARGS}
-        BUILD_BYPRODUCTS ${EXTERNAL_INSTALL_PREFIX}/lib/libqpOASES.a
-    )
-
-    add_library(qpoases STATIC IMPORTED)
-    set_target_properties(qpoases PROPERTIES
-        IMPORTED_LOCATION ${EXTERNAL_INSTALL_PREFIX}/lib/libqpOASES.a
-        INTERFACE_INCLUDE_DIRECTORIES ${EXTERNAL_INSTALL_PREFIX}/include
-    )
-    add_dependencies(qpoases qpoases_ext)
-endif()
-
 # ---------------------------------------------------------------------------
 # Main library
 # ---------------------------------------------------------------------------
@@ -165,22 +139,13 @@ if(MPC_USE_NEON)
 endif()
 
 if(MPC_USE_HPIPM)
-    target_sources(mecanum_mpc PRIVATE src/hpipm_solver.cpp src/hpipm_ocp_solver.cpp)
+    target_sources(mecanum_mpc PRIVATE src/hpipm_ocp_solver.cpp)
     target_compile_definitions(mecanum_mpc PUBLIC MPC_USE_HPIPM=1)
     target_link_libraries(mecanum_mpc PUBLIC hpipm)
     target_include_directories(mecanum_mpc PUBLIC
         ${EXTERNAL_INSTALL_PREFIX}/include
         ${EXTERNAL_INSTALL_PREFIX}/include/hpipm
         ${EXTERNAL_INSTALL_PREFIX}/include/blasfeo/include
-    )
-endif()
-
-if(MPC_USE_QPOASES)
-    target_sources(mecanum_mpc PRIVATE src/qpoases_solver.cpp)
-    target_compile_definitions(mecanum_mpc PUBLIC MPC_USE_QPOASES=1)
-    target_link_libraries(mecanum_mpc PUBLIC qpoases)
-    target_include_directories(mecanum_mpc PUBLIC
-        ${EXTERNAL_INSTALL_PREFIX}/include
     )
 endif()
 

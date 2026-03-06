@@ -109,24 +109,6 @@ struct HeadingLookupData {
     double dt;
 };
 
-// Discrete heading table: B_d precomputed at M evenly-spaced headings
-constexpr int HEADING_TABLE_M_DEFAULT = 72;       // every 5°
-
-struct HeadingTableData {
-    double A_d[NX * NX];                          // same constant A_d
-    double B_d_table[HEADING_TABLE_M_DEFAULT * NX * NU]; // B_d at M headings
-    double A_d_pow[(N_MAX + 1) * NX * NX];
-    int M;                                         // number of heading samples
-    double dt;
-};
-
-// Precomputed cost kernels for fast heading-lookup condensing
-struct HeadingKernelData {
-    double P[N_MAX * NX * NX];         // P[j] cost-to-go kernels, j=0..N-1
-    double G[N_MAX * NX * NX];         // G[j] = P[j] * A_d^(j+1), gradient kernels
-    int N;                              // horizon length
-};
-
 // Heading schedule configuration
 struct HeadingScheduleConfig {
     double alpha_0;        // max angular accel at zero ω (rad/s²)
