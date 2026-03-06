@@ -25,39 +25,44 @@ extern "C" {
 void hpipm_ocp_workspace_init(HpipmOcpWorkspace& ws, int N)
 {
     ws.N_alloc = N;
+    ws.structures_created = false;
+    ws.static_data_set = false;
+    ws.dim = nullptr;
+    ws.qp = nullptr;
+    ws.sol = nullptr;
+    ws.arg = nullptr;
+    ws.ipm_ws = nullptr;
 
-    // Compute memory sizes
+    // Compute memory sizes using temporary structs
     hpipm_size_t dim_size = d_ocp_qp_dim_memsize(N);
     void* dim_mem = std::malloc(dim_size);
-    struct d_ocp_qp_dim dim;
-    d_ocp_qp_dim_create(N, &dim, dim_mem);
+    struct d_ocp_qp_dim tmp_dim;
+    d_ocp_qp_dim_create(N, &tmp_dim, dim_mem);
 
-    // Set dimensions: nx, nu, nb, ng, ns per stage
     int nx[N_MAX + 1], nu_arr[N_MAX + 1], nbx[N_MAX + 1], nbu[N_MAX + 1];
     int ng[N_MAX + 1], ns[N_MAX + 1];
 
     for (int k = 0; k <= N; ++k) {
         nx[k] = NX;
         nu_arr[k] = (k < N) ? NU : 0;
-        nbx[k] = (k == 0) ? NX : 0;  // initial state constraint
-        nbu[k] = (k < N) ? NU : 0;    // box constraints on u
+        nbx[k] = (k == 0) ? NX : 0;
+        nbu[k] = (k < N) ? NU : 0;
         ng[k] = 0;
         ns[k] = 0;
     }
 
-    d_ocp_qp_dim_set_all(nx, nu_arr, nbx, nbu, ng, ns, &dim);
+    d_ocp_qp_dim_set_all(nx, nu_arr, nbx, nbu, ng, ns, &tmp_dim);
 
-    hpipm_size_t qp_size  = d_ocp_qp_memsize(&dim);
-    hpipm_size_t sol_size = d_ocp_qp_sol_memsize(&dim);
-    hpipm_size_t arg_size = d_ocp_qp_ipm_arg_memsize(&dim);
+    hpipm_size_t qp_size  = d_ocp_qp_memsize(&tmp_dim);
+    hpipm_size_t sol_size = d_ocp_qp_sol_memsize(&tmp_dim);
+    hpipm_size_t arg_size = d_ocp_qp_ipm_arg_memsize(&tmp_dim);
 
-    // Need arg to compute ipm_ws size
     void* arg_mem = std::malloc(arg_size);
-    struct d_ocp_qp_ipm_arg arg;
-    d_ocp_qp_ipm_arg_create(&dim, &arg, arg_mem);
-    d_ocp_qp_ipm_arg_set_default(SPEED, &arg);
+    struct d_ocp_qp_ipm_arg tmp_arg;
+    d_ocp_qp_ipm_arg_create(&tmp_dim, &tmp_arg, arg_mem);
+    d_ocp_qp_ipm_arg_set_default(SPEED, &tmp_arg);
 
-    hpipm_size_t ipm_size = d_ocp_qp_ipm_ws_memsize(&dim, &arg);
+    hpipm_size_t ipm_size = d_ocp_qp_ipm_ws_memsize(&tmp_dim, &tmp_arg);
 
     std::free(arg_mem);
     std::free(dim_mem);
@@ -74,6 +79,65 @@ void hpipm_ocp_workspace_init(HpipmOcpWorkspace& ws, int N)
     ws.memory = std::malloc(total);
     ws.memory_size = static_cast<int>(total);
     std::memset(ws.memory, 0, total);
+
+    // Create all HPIPM structures once
+    char* ptr = static_cast<char*>(ws.memory);
+    auto align64 = [](char*& p) {
+        p = reinterpret_cast<char*>((reinterpret_cast<uintptr_t>(p) + 63) & ~63ULL);
+    };
+
+    auto* dim    = reinterpret_cast<struct d_ocp_qp_dim*>(ptr);     ptr += sizeof(*dim);
+    auto* qp     = reinterpret_cast<struct d_ocp_qp*>(ptr);        ptr += sizeof(*qp);
+    auto* sol    = reinterpret_cast<struct d_ocp_qp_sol*>(ptr);    ptr += sizeof(*sol);
+    auto* arg    = reinterpret_cast<struct d_ocp_qp_ipm_arg*>(ptr); ptr += sizeof(*arg);
+    auto* ipm_ws_ptr = reinterpret_cast<struct d_ocp_qp_ipm_ws*>(ptr); ptr += sizeof(*ipm_ws_ptr);
+
+    align64(ptr);
+    d_ocp_qp_dim_create(N, dim, ptr);
+    ptr += dim_size;
+
+    d_ocp_qp_dim_set_all(nx, nu_arr, nbx, nbu, ng, ns, dim);
+
+    align64(ptr);
+    d_ocp_qp_create(dim, qp, ptr);
+    ptr += qp_size;
+
+    align64(ptr);
+    d_ocp_qp_sol_create(dim, sol, ptr);
+    ptr += sol_size;
+
+    align64(ptr);
+    d_ocp_qp_ipm_arg_create(dim, arg, ptr);
+    d_ocp_qp_ipm_arg_set_default(SPEED, arg);
+    ptr += arg_size;
+
+    align64(ptr);
+    d_ocp_qp_ipm_ws_create(dim, arg, ipm_ws_ptr, ptr);
+
+    // Set b_k = 0 for all stages (never changes)
+    double b_zero[NX] = {};
+    for (int k = 0; k < N; ++k)
+        d_ocp_qp_set_b(k, b_zero, qp);
+
+    // Set idxbu indices (never change)
+    int idxbu[NU];
+    for (int j = 0; j < NU; ++j)
+        idxbu[j] = j;
+    for (int k = 0; k < N; ++k)
+        d_ocp_qp_set_idxbu(k, idxbu, qp);
+
+    // Set idxbx for stage 0 (never changes)
+    int idxbx[NX];
+    for (int i = 0; i < NX; ++i)
+        idxbx[i] = i;
+    d_ocp_qp_set_idxbx(0, idxbx, qp);
+
+    ws.dim = dim;
+    ws.qp = qp;
+    ws.sol = sol;
+    ws.arg = arg;
+    ws.ipm_ws = ipm_ws_ptr;
+    ws.structures_created = true;
 }
 
 void hpipm_ocp_workspace_free(HpipmOcpWorkspace& ws)
@@ -84,12 +148,19 @@ void hpipm_ocp_workspace_free(HpipmOcpWorkspace& ws)
     }
     ws.memory_size = 0;
     ws.N_alloc = 0;
+    ws.structures_created = false;
+    ws.static_data_set = false;
+    ws.dim = nullptr;
+    ws.qp = nullptr;
+    ws.sol = nullptr;
+    ws.arg = nullptr;
+    ws.ipm_ws = nullptr;
 }
 
 // ---------------------------------------------------------------------------
 // OCP QP solve
 // ---------------------------------------------------------------------------
-int hpipm_ocp_qp_solve(const double* A_list, const double* B_list,
+int hpipm_ocp_qp_solve(const double* A_d, const double* B_list,
                         const double* Q, const double* Qf, const double* R,
                         const double* x_ref_consistent, const double* u_ref,
                         const double x0[NX],
@@ -97,139 +168,75 @@ int hpipm_ocp_qp_solve(const double* A_list, const double* B_list,
                         double* U_out,
                         HpipmOcpWorkspace& ws)
 {
-    if (ws.N_alloc != N) {
+    if (ws.N_alloc != N || !ws.structures_created) {
         hpipm_ocp_workspace_free(ws);
         hpipm_ocp_workspace_init(ws, N);
     }
 
-    char* ptr = static_cast<char*>(ws.memory);
-    auto align64 = [](char*& p) {
-        p = reinterpret_cast<char*>((reinterpret_cast<uintptr_t>(p) + 63) & ~63ULL);
-    };
+    auto* qp     = static_cast<struct d_ocp_qp*>(ws.qp);
+    auto* sol    = static_cast<struct d_ocp_qp_sol*>(ws.sol);
+    auto* arg    = static_cast<struct d_ocp_qp_ipm_arg*>(ws.arg);
+    auto* ipm_ws = static_cast<struct d_ocp_qp_ipm_ws*>(ws.ipm_ws);
 
-    // Place structs
-    auto* dim    = reinterpret_cast<struct d_ocp_qp_dim*>(ptr);     ptr += sizeof(*dim);
-    auto* qp     = reinterpret_cast<struct d_ocp_qp*>(ptr);        ptr += sizeof(*qp);
-    auto* sol    = reinterpret_cast<struct d_ocp_qp_sol*>(ptr);    ptr += sizeof(*sol);
-    auto* arg    = reinterpret_cast<struct d_ocp_qp_ipm_arg*>(ptr); ptr += sizeof(*arg);
-    auto* ipm_ws = reinterpret_cast<struct d_ocp_qp_ipm_ws*>(ptr); ptr += sizeof(*ipm_ws);
+    // Set static data once (Q, R, Qf, bounds) — only on first solve or bound change
+    if (!ws.static_data_set || ws.cached_u_min != u_min || ws.cached_u_max != u_max) {
+        double lb[NU], ub[NU];
+        for (int j = 0; j < NU; ++j) {
+            lb[j] = u_min;
+            ub[j] = u_max;
+        }
 
-    // Dim memory
-    align64(ptr);
-    d_ocp_qp_dim_create(N, dim, ptr);
-    ptr += d_ocp_qp_dim_memsize(N);
+        for (int k = 0; k < N; ++k) {
+            d_ocp_qp_set_Q(k, const_cast<double*>(Q), qp);
+            d_ocp_qp_set_R(k, const_cast<double*>(R), qp);
+            d_ocp_qp_set_lbu(k, lb, qp);
+            d_ocp_qp_set_ubu(k, ub, qp);
+        }
+        d_ocp_qp_set_Q(N, const_cast<double*>(Qf), qp);
 
-    // Set dimensions
-    int nx[N_MAX + 1], nu_arr[N_MAX + 1], nbx[N_MAX + 1], nbu[N_MAX + 1];
-    int ng_arr[N_MAX + 1], ns_arr[N_MAX + 1];
-
-    for (int k = 0; k <= N; ++k) {
-        nx[k] = NX;
-        nu_arr[k] = (k < N) ? NU : 0;
-        nbx[k] = (k == 0) ? NX : 0;
-        nbu[k] = (k < N) ? NU : 0;
-        ng_arr[k] = 0;
-        ns_arr[k] = 0;
+        ws.cached_u_min = u_min;
+        ws.cached_u_max = u_max;
+        ws.static_data_set = true;
     }
-    d_ocp_qp_dim_set_all(nx, nu_arr, nbx, nbu, ng_arr, ns_arr, dim);
 
-    // QP memory
-    align64(ptr);
-    d_ocp_qp_create(dim, qp, ptr);
-    ptr += d_ocp_qp_memsize(dim);
+    // --- Set per-solve data ---
 
-    // Sol memory
-    align64(ptr);
-    d_ocp_qp_sol_create(dim, sol, ptr);
-    ptr += d_ocp_qp_sol_memsize(dim);
-
-    // Arg memory
-    align64(ptr);
-    d_ocp_qp_ipm_arg_create(dim, arg, ptr);
-    d_ocp_qp_ipm_arg_set_default(SPEED, arg);
-    ptr += d_ocp_qp_ipm_arg_memsize(dim);
-
-    // IPM workspace memory
-    align64(ptr);
-    d_ocp_qp_ipm_ws_create(dim, arg, ipm_ws, ptr);
-
-    // --- Set problem data ---
-
-    // Temporary vectors for gradient terms
-    double q_k[NX], r_k[NU];
-    double lb[NU], ub[NU];
-    int idxbu[NU], idxbx[NX];
-
-    for (int j = 0; j < NU; ++j) {
-        lb[j] = u_min;
-        ub[j] = u_max;
-        idxbu[j] = j;
-    }
-    for (int i = 0; i < NX; ++i)
-        idxbx[i] = i;
-
-    // Per-stage data
+    // Dynamics: same A_d for all stages, per-stage B_k
     for (int k = 0; k < N; ++k) {
-        const double* A_k = A_list + k * NX * NX;
-        const double* B_k = B_list + k * NX * NU;
+        d_ocp_qp_set_A(k, const_cast<double*>(A_d), qp);
+        d_ocp_qp_set_B(k, const_cast<double*>(B_list + k * NX * NU), qp);
+    }
+
+    // Linear cost terms (exploit diagonal Q and R)
+    double q_k[NX], r_k[NU];
+    for (int k = 0; k < N; ++k) {
         const double* x_ref_k = x_ref_consistent + k * NX;
         const double* u_ref_k = u_ref + k * NU;
 
-        d_ocp_qp_set_A(k, const_cast<double*>(A_k), qp);
-        d_ocp_qp_set_B(k, const_cast<double*>(B_k), qp);
-
-        // b_k = 0 (dynamics: x_{k+1} = A_k x_k + B_k u_k, no affine term
-        // since we use consistent reference)
-        double b_k[NX];
-        std::memset(b_k, 0, NX * sizeof(double));
-        d_ocp_qp_set_b(k, b_k, qp);
-
-        // Stage cost: Q, R
-        d_ocp_qp_set_Q(k, const_cast<double*>(Q), qp);
-        d_ocp_qp_set_R(k, const_cast<double*>(R), qp);
-
-        // Linear terms: q_k = -Q * x_ref_k, r_k = -R * u_ref_k
-        for (int i = 0; i < NX; ++i) {
-            q_k[i] = 0.0;
-            for (int j = 0; j < NX; ++j)
-                q_k[i] -= Q[i + NX * j] * x_ref_k[j];
-        }
+        for (int i = 0; i < NX; ++i)
+            q_k[i] = -Q[i + NX * i] * x_ref_k[i];
         d_ocp_qp_set_q(k, q_k, qp);
 
-        for (int i = 0; i < NU; ++i) {
-            r_k[i] = 0.0;
-            for (int j = 0; j < NU; ++j)
-                r_k[i] -= R[i + NU * j] * u_ref_k[j];
-        }
+        for (int i = 0; i < NU; ++i)
+            r_k[i] = -R[i + NU * i] * u_ref_k[i];
         d_ocp_qp_set_r(k, r_k, qp);
-
-        // Box constraints on u
-        d_ocp_qp_set_idxbu(k, idxbu, qp);
-        d_ocp_qp_set_lbu(k, lb, qp);
-        d_ocp_qp_set_ubu(k, ub, qp);
     }
 
-    // Terminal cost
+    // Terminal linear cost (diagonal Qf)
     const double* x_ref_N = x_ref_consistent + N * NX;
-    d_ocp_qp_set_Q(N, const_cast<double*>(Qf), qp);
-
     double qf_k[NX];
-    for (int i = 0; i < NX; ++i) {
-        qf_k[i] = 0.0;
-        for (int j = 0; j < NX; ++j)
-            qf_k[i] -= Qf[i + NX * j] * x_ref_N[j];
-    }
+    for (int i = 0; i < NX; ++i)
+        qf_k[i] = -Qf[i + NX * i] * x_ref_N[i];
     d_ocp_qp_set_q(N, qf_k, qp);
 
-    // Initial state constraint: x_0 = x0
-    d_ocp_qp_set_idxbx(0, idxbx, qp);
+    // Initial state constraint
     d_ocp_qp_set_lbx(0, const_cast<double*>(x0), qp);
     d_ocp_qp_set_ubx(0, const_cast<double*>(x0), qp);
 
     // Solve
     d_ocp_qp_ipm_solve(qp, sol, arg, ipm_ws);
 
-    // Extract solution (u_k for k=0..N-1)
+    // Extract solution
     for (int k = 0; k < N; ++k) {
         double u_k[NU];
         d_ocp_qp_sol_get_u(k, sol, u_k);

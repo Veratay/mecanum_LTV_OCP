@@ -118,11 +118,6 @@ QPSolution heading_lookup_solve_ocp(const HeadingLookupData& data,
     double B_list[N_MAX * NX * NU];
     heading_lookup_build_B_list(data, theta_sched, N, B_list);
 
-    // Build A_list as N copies of A_d
-    double A_list[N_MAX * NX * NX];
-    for (int k = 0; k < N; ++k)
-        std::memcpy(A_list + k * NX * NX, data.A_d, NX * NX * sizeof(double));
-
     // Build consistent reference
     double x_ref_consistent[(N_MAX + 1) * NX];
     std::memcpy(x_ref_consistent, ref_window[0].x_ref, NX * sizeof(double));
@@ -148,7 +143,7 @@ QPSolution heading_lookup_solve_ocp(const HeadingLookupData& data,
     QPSolution sol;
     std::memset(&sol, 0, sizeof(sol));
 
-    sol.n_iterations = hpipm_ocp_qp_solve(A_list, B_list,
+    sol.n_iterations = hpipm_ocp_qp_solve(data.A_d, B_list,
                                             config.Q, config.Qf, config.R,
                                             x_ref_consistent, u_ref_stacked,
                                             x0, config.u_min, config.u_max, N,

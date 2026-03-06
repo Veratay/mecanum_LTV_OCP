@@ -41,7 +41,7 @@ void generate_heading_schedule(const double x0[NX], const RefNode* ref_window,
 // ---------------------------------------------------------------------------
 
 #ifdef MPC_USE_HPIPM
-// Direct OCP solve via HPIPM Riccati (no condensing at all)
+// Direct OCP solve via HPIPM Riccati (no condensing, persistent workspace)
 QPSolution heading_lookup_solve_ocp(const HeadingLookupData& data,
                                     const RefNode* ref_window,
                                     const double x0[NX],
