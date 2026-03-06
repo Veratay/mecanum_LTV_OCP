@@ -15,6 +15,8 @@ void solver_context_init(SolverContext& ctx, int n)
 #ifdef MPC_USE_HPIPM
     std::memset(&ctx.hpipm_ws, 0, sizeof(ctx.hpipm_ws));
     hpipm_workspace_init(ctx.hpipm_ws, n);
+    std::memset(&ctx.hpipm_ocp_ws, 0, sizeof(ctx.hpipm_ocp_ws));
+    // OCP workspace is lazily initialized on first use
 #endif
 
 #ifdef MPC_USE_QPOASES
@@ -29,6 +31,7 @@ void solver_context_free(SolverContext& ctx)
 {
 #ifdef MPC_USE_HPIPM
     hpipm_workspace_free(ctx.hpipm_ws);
+    hpipm_ocp_workspace_free(ctx.hpipm_ocp_ws);
 #endif
 
 #ifdef MPC_USE_QPOASES
@@ -147,6 +150,9 @@ QPSolution mpc_solve_with_solver(const PrecomputedWindow& window,
     }
 #endif
 
+    case QpSolverType::HPIPM_OCP:
+        // HPIPM OCP is called directly from heading_lookup_online, not through
+        // this condensed-QP dispatch. Fall through to default.
     default:
         // Solver not available in this build — zero output
         std::memset(ws.U, 0, n_vars * sizeof(double));

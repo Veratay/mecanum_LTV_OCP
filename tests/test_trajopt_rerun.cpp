@@ -478,10 +478,12 @@ int main(int argc, char** argv)
 
         if (k % 10 == 0 || k == n_sim - 1) {
             std::printf("  step %3d/%d  pos_err=%.4f  heading_err=%.4f  "
-                        "u0=[%6.3f %6.3f %6.3f %6.3f]  solve=%.0fus\n",
+                        "u0=[%6.3f %6.3f %6.3f %6.3f]  u_ref=[%6.3f %6.3f %6.3f %6.3f]  solve=%.0fus  iter=%d\n",
                         k, n_sim, err_pos, err_heading,
                         sol.u0[0], sol.u0[1], sol.u0[2], sol.u0[3],
-                        sol.solve_time_ns / 1000.0);
+                        ref_path[k].u_ref[0], ref_path[k].u_ref[1],
+                        ref_path[k].u_ref[2], ref_path[k].u_ref[3],
+                        sol.solve_time_ns / 1000.0, sol.n_iterations);
         }
     }
 

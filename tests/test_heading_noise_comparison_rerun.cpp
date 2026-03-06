@@ -1,7 +1,17 @@
-// test_solver_comparison_rerun.cpp -- Run all enabled QP solvers on the same
-// trajectory and visualize solve times + trajectories side-by-side with rerun.
+// test_heading_noise_comparison_rerun.cpp -- Compare offline LTV vs dynamic
+// heading-lookup solvers under heading process noise.
 //
-// Usage:  ./test_solver_comparison_rerun [project.json] [trajectory_index]
+// The offline (PRECOMPUTED) solver uses windows linearized at nominal headings.
+// When heading deviates from the reference, the stored B_d matrices become
+// stale.  The dynamic (HL_TRIG / HL_TABLE) solvers call generate_heading_schedule
+// each step from the actual x_cur, so they always re-linearize around the
+// true heading.
+//
+// Noise model: after each RK4 simulation step, zero-mean Gaussian noise is
+// added directly to theta (x_cur[2]).  Control inputs are applied cleanly so
+// any tracking difference is purely attributable to heading adaptation.
+//
+// Usage:  ./test_heading_noise_comparison_rerun [project.json] [trajectory_index]
 //         defaults: turntest.json, 0
 
 #include "mpc_types.h"
@@ -31,7 +41,7 @@
 using json = nlohmann::json;
 
 // ---------------------------------------------------------------------------
-// Trajectory loading (shared with test_trajopt_rerun.cpp)
+// Trajectory loading (same format as test_solver_comparison_rerun)
 // ---------------------------------------------------------------------------
 struct TrajoptTrajectory {
     std::vector<double> times;
@@ -99,9 +109,6 @@ static bool load_trajectory(const std::string& path, int traj_idx,
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Resample trajectory to uniform dt via linear interpolation
-// ---------------------------------------------------------------------------
 static void resample_trajectory(TrajoptTrajectory& traj, double target_dt)
 {
     if (traj.times.size() < 2) return;
@@ -179,7 +186,7 @@ static void convert_to_refnodes(const TrajoptTrajectory& traj,
 }
 
 // ---------------------------------------------------------------------------
-// RK4 simulation step
+// RK4 plant simulation
 // ---------------------------------------------------------------------------
 static void xdot(const double* x, const double* u, const ModelParams& params,
                  double* dx)
@@ -236,13 +243,12 @@ int main(int argc, char** argv)
     if (argc > 1) project_file = argv[1];
     if (argc > 2) traj_idx = std::atoi(argv[2]);
 
-    // Load trajectory
+    // Load and resample trajectory
     TrajoptTrajectory traj;
     TrajoptParams tp;
     if (!load_trajectory(project_file, traj_idx, traj, tp))
         return 1;
 
-    // Resample to uniform dt (use the minimum segment dt)
     {
         double min_dt = 1e9;
         for (size_t k = 0; k + 1 < traj.times.size(); ++k) {
@@ -265,11 +271,10 @@ int main(int argc, char** argv)
     params.free_speed      = tp.free_speed;
     compute_mecanum_jacobian(params);
 
-    // Convert trajectory
+    // Convert and pad trajectory
     std::vector<RefNode> ref_path;
     convert_to_refnodes(traj, ref_path);
 
-    // MPC config
     MPCConfig config{};
     config.N     = 30;
     config.dt    = traj.times[1] - traj.times[0];
@@ -291,7 +296,6 @@ int main(int argc, char** argv)
     for (int i = 0; i < NX * NX; ++i)
         config.Qf[i] = 0.0 * config.Q[i];
 
-    // Pad trajectory
     {
         const RefNode& last = ref_path.back();
         for (int i = 1; i <= 2 * config.N; ++i) {
@@ -307,7 +311,7 @@ int main(int argc, char** argv)
     }
     int n_path = static_cast<int>(ref_path.size());
 
-    // Precompute windows (shared across all solvers)
+    // Precompute offline windows
     int n_windows = 0;
     PrecomputedWindow* windows = mpc_precompute_all(
         ref_path.data(), n_path, params, config, n_windows);
@@ -316,41 +320,7 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "Precomputation failed\n");
         return 1;
     }
-    std::printf("Precomputed %d windows\n", n_windows);
-
-    // Build list of enabled solvers
-    struct SolverDef {
-        const char* name;
-        QpSolverType type;
-        SolveMode mode;
-        rerun::Color color;
-    };
-
-    std::vector<SolverDef> solver_defs = {
-        {"fista",           QpSolverType::FISTA,      SolveMode::PRECOMPUTED, rerun::Color(0, 200, 0)},
-        //{"active_set",      QpSolverType::ACTIVE_SET,  SolveMode::PRECOMPUTED, rerun::Color(0, 150, 255)},
-    };
-
-#ifdef MPC_USE_HPIPM
-    solver_defs.push_back({"hpipm",   QpSolverType::HPIPM,   SolveMode::PRECOMPUTED, rerun::Color(255, 165, 0)});
-#endif
-#ifdef MPC_USE_QPOASES
-    solver_defs.push_back({"qpoases", QpSolverType::QPOASES, SolveMode::PRECOMPUTED, rerun::Color(180, 0, 255)});
-#endif
-
-    // Heading-lookup runs
-    solver_defs.push_back({"hl_trig_fista",      QpSolverType::FISTA,      SolveMode::HL_TRIG,  rerun::Color(0, 255, 100)});
-    //solver_defs.push_back({"hl_trig_active_set", QpSolverType::ACTIVE_SET, SolveMode::HL_TRIG,  rerun::Color(100, 200, 255)});
-    solver_defs.push_back({"hl_table_fista",     QpSolverType::FISTA,      SolveMode::HL_TABLE, rerun::Color(255, 255, 0)});
-
-#ifdef MPC_USE_HPIPM
-    solver_defs.push_back({"hl_trig_hpipm",  QpSolverType::HPIPM, SolveMode::HL_TRIG,  rerun::Color(255, 200, 100)});
-#endif
-
-    std::printf("Enabled solvers:");
-    for (auto& sd : solver_defs)
-        std::printf(" %s", sd.name);
-    std::printf("\n");
+    std::printf("Precomputed %d offline windows\n", n_windows);
 
     // Precompute heading-lookup data
     HeadingLookupData hl_data;
@@ -362,6 +332,56 @@ int main(int argc, char** argv)
     std::printf("Heading table precomputed (M=%d)\n", HEADING_TABLE_M_DEFAULT);
 
     HeadingScheduleConfig sched_config = heading_schedule_config_from_params(params);
+
+    // Build solver list
+    struct SolverDef {
+        const char* name;
+        QpSolverType type;
+        SolveMode mode;
+        rerun::Color color;
+    };
+
+    std::vector<SolverDef> solver_defs = {
+        // Offline LTV (precomputed windows, fixed heading linearization)
+        {"offline_fista",      QpSolverType::FISTA,      SolveMode::PRECOMPUTED, rerun::Color(220,  80,  80)},
+
+        // Dynamic heading — trig decomposition
+        {"hl_trig_fista",      QpSolverType::FISTA,      SolveMode::HL_TRIG,    rerun::Color( 80, 220,  80)},
+
+        // Dynamic heading — table interpolation
+        {"hl_table_fista",     QpSolverType::FISTA,      SolveMode::HL_TABLE,   rerun::Color( 80, 180, 255)},
+    };
+
+#ifdef MPC_USE_HPIPM
+    solver_defs.push_back({"offline_hpipm",   QpSolverType::HPIPM,   SolveMode::PRECOMPUTED, rerun::Color(255, 100,  40)});
+    solver_defs.push_back({"hl_trig_hpipm",   QpSolverType::HPIPM,   SolveMode::HL_TRIG,    rerun::Color(255, 200,  80)});
+    solver_defs.push_back({"hl_table_hpipm",  QpSolverType::HPIPM,   SolveMode::HL_TABLE,   rerun::Color(180, 255, 200)});
+    solver_defs.push_back({"offline_hpipm_ocp",QpSolverType::HPIPM_OCP,SolveMode::PRECOMPUTED,rerun::Color(255, 140, 100)});
+#endif
+#ifdef MPC_USE_QPOASES
+    solver_defs.push_back({"offline_qpoases", QpSolverType::QPOASES, SolveMode::PRECOMPUTED, rerun::Color(200,  80, 200)});
+    solver_defs.push_back({"hl_trig_qpoases", QpSolverType::QPOASES, SolveMode::HL_TRIG,    rerun::Color(220, 140, 255)});
+#endif
+
+    std::printf("Enabled solvers:");
+    for (auto& sd : solver_defs)
+        std::printf(" %s", sd.name);
+    std::printf("\n");
+
+    // Heading process-noise table (shared across all solver runs so each sees
+    // the same disturbance sequence and their x_cur trajectories stay coupled)
+    constexpr double HEADING_NOISE_STDDEV = 0.5;  // rad (~2.9 deg per step)
+    constexpr unsigned NOISE_SEED = 137;
+    int n_sim = std::min(n_windows, n_path - 1);
+
+    std::mt19937 rng(NOISE_SEED);
+    std::normal_distribution<double> heading_noise_dist(0.0, HEADING_NOISE_STDDEV);
+    std::vector<double> heading_noise_table(n_sim);
+    for (int k = 0; k < n_sim; ++k)
+        heading_noise_table[k] = heading_noise_dist(rng);
+
+    std::printf("\nNoise model: heading θ += N(0, %.4f rad) per step\n",
+                HEADING_NOISE_STDDEV);
 
     // Initialize solver runs
     int n_vars = config.N * NU;
@@ -378,11 +398,11 @@ int main(int argc, char** argv)
                                       static_cast<float>(ref_path[0].x_ref[1])});
     }
 
-    // Initialize rerun
-    auto rec = rerun::RecordingStream("mpc_solver_comparison");
+    // Initialize Rerun
+    auto rec = rerun::RecordingStream("mpc_heading_noise_comparison");
     rec.spawn().exit_on_failure();
 
-    // Log reference trajectory (static)
+    // Log static reference trajectory
     {
         std::vector<rerun::Vec2D> ref_pts;
         ref_pts.reserve(n_path);
@@ -392,32 +412,28 @@ int main(int argc, char** argv)
         rec.log_static("reference/trajectory",
                         rerun::LineStrips2D(rerun::LineStrip2D(ref_pts))
                             .with_colors({rerun::Color(100, 100, 255)}));
+
+        // Also log reference heading over time
+        std::vector<double> ref_thetas(n_path);
+        for (int k = 0; k < n_path; ++k)
+            ref_thetas[k] = ref_path[k].theta;
     }
 
-    // Disturbance noise: pre-generate so every solver sees identical noise
-    constexpr double NOISE_STDDEV = 0.1;  // duty-cycle units (5% of full range)
-    constexpr unsigned NOISE_SEED = 42;
-    int n_sim = std::min(n_windows, n_path - 1);
-
-    std::mt19937 rng(NOISE_SEED);
-    std::normal_distribution<double> noise_dist(0.0, NOISE_STDDEV);
-    std::vector<std::array<double, NU>> noise_table(n_sim);
-    for (int k = 0; k < n_sim; ++k)
-        for (int j = 0; j < NU; ++j)
-            noise_table[k][j] = noise_dist(rng);
-
-    std::printf("\nRunning %d steps with %zu solvers (noise σ=%.3f)...\n",
-                n_sim, runs.size(), NOISE_STDDEV);
+    std::printf("Running %d steps with %zu solvers...\n", n_sim, runs.size());
 
     for (int k = 0; k < n_sim; ++k) {
         double t = ref_path[k].t;
         rec.set_time_seconds("sim_time", t);
 
+        // Log shared heading noise for this step
+        rec.log("noise/heading_rad", rerun::Scalars(heading_noise_table[k]));
+        rec.log("reference/theta", rerun::Scalars(ref_path[k].theta));
+
         for (size_t s = 0; s < runs.size(); ++s) {
             auto& run = runs[s];
             std::string prefix = run.name;
 
-            // Solve (dispatch by mode)
+            // Solve: dispatch to the appropriate solver
             QPSolution sol;
             switch (run.mode) {
                 case SolveMode::PRECOMPUTED:
@@ -439,62 +455,50 @@ int main(int argc, char** argv)
             double solve_us = sol.solve_time_ns / 1000.0;
             run.solve_times_us.push_back(solve_us);
 
-            // Position error
+            // Compute errors against reference
             double err_pos = std::sqrt(
                 (run.x_cur[0] - ref_path[k].x_ref[0]) * (run.x_cur[0] - ref_path[k].x_ref[0]) +
                 (run.x_cur[1] - ref_path[k].x_ref[1]) * (run.x_cur[1] - ref_path[k].x_ref[1]));
+            double err_heading = run.x_cur[2] - ref_path[k].x_ref[2];
 
-            // Log metrics under shared entities so solvers overlay
-            rec.log("metrics/solve_time_us/" + prefix,
-                    rerun::Scalars(solve_us));
-            rec.log("metrics/position_error/" + prefix,
-                    rerun::Scalars(err_pos));
-            rec.log("metrics/n_iterations/" + prefix,
+            // Log per-solver metrics
+            rec.log("metrics/solve_time_us/"  + prefix, rerun::Scalars(solve_us));
+            rec.log("metrics/position_error/" + prefix, rerun::Scalars(err_pos));
+            rec.log("metrics/heading_error/"  + prefix, rerun::Scalars(err_heading));
+            rec.log("metrics/n_iterations/"   + prefix,
                     rerun::Scalars(static_cast<double>(sol.n_iterations)));
 
-            // Log solved control trajectory for first 4 inputs
-            for (int j = 0; j < NU; ++j) {
+            for (int j = 0; j < NU; ++j)
                 rec.log("control/u" + std::to_string(j) + "/" + prefix,
                         rerun::Scalars(sol.u0[j]));
-            }
 
-            // Log current robot position as a point
             rec.log("trajectory/" + prefix + "_position",
                     rerun::Points2D({{static_cast<float>(run.x_cur[0]),
                                       static_cast<float>(run.x_cur[1])}})
                         .with_colors({run.color})
                         .with_radii({0.02f}));
 
-            // Add disturbance noise to control (same noise for all solvers)
-            double u_noisy[NU];
-            for (int j = 0; j < NU; ++j)
-                u_noisy[j] = std::clamp(sol.u0[j] + noise_table[k][j],
-                                        config.u_min, config.u_max);
+            // Simulate forward with clean control (no actuator noise so that
+            // any trajectory divergence is solely due to heading adaptation)
+            rk4_step(run.x_cur, sol.u0, config.dt, params);
 
-            // Simulate forward with noisy control
-            rk4_step(run.x_cur, u_noisy, config.dt, params);
+            // Inject heading process noise (same value for all solvers)
+            run.x_cur[2] += heading_noise_table[k];
+
+            // Log state
+            rec.log("state/px/"    + prefix, rerun::Scalars(run.x_cur[0]));
+            rec.log("state/py/"    + prefix, rerun::Scalars(run.x_cur[1]));
+            rec.log("state/theta/" + prefix, rerun::Scalars(run.x_cur[2]));
+            rec.log("state/vx/"    + prefix, rerun::Scalars(run.x_cur[3]));
+            rec.log("state/vy/"    + prefix, rerun::Scalars(run.x_cur[4]));
+            rec.log("state/omega/" + prefix, rerun::Scalars(run.x_cur[5]));
 
             run.actual_pts.push_back({static_cast<float>(run.x_cur[0]),
                                       static_cast<float>(run.x_cur[1])});
-
-            // Log growing actual trajectory
             rec.log("trajectory/" + prefix,
                     rerun::LineStrips2D(rerun::LineStrip2D(run.actual_pts))
                         .with_colors({run.color}));
-
-            // Log per-state solved trajectory
-            rec.log("state/px/" + prefix, rerun::Scalars(run.x_cur[0]));
-            rec.log("state/py/" + prefix, rerun::Scalars(run.x_cur[1]));
-            rec.log("state/theta/" + prefix, rerun::Scalars(run.x_cur[2]));
-            rec.log("state/vx/" + prefix, rerun::Scalars(run.x_cur[3]));
-            rec.log("state/vy/" + prefix, rerun::Scalars(run.x_cur[4]));
-            rec.log("state/omega/" + prefix, rerun::Scalars(run.x_cur[5]));
         }
-
-        // Log noise (shared across solvers, so log once per step)
-        for (int j = 0; j < NU; ++j)
-            rec.log("noise/u" + std::to_string(j),
-                    rerun::Scalars(noise_table[k][j]));
 
         if (k % 20 == 0 || k == n_sim - 1) {
             std::printf("  step %3d/%d", k, n_sim);
@@ -504,18 +508,27 @@ int main(int argc, char** argv)
         }
     }
 
-    // Print summary table
-    std::printf("\n%-12s %8s %8s %8s %8s\n",
-                "Solver", "Mean(us)", "Med(us)", "Max(us)", "Min(us)");
-    std::printf("%-12s %8s %8s %8s %8s\n",
-                "------", "--------", "-------", "-------", "-------");
+    // Summary table: solve times + final heading/position tracking
+    std::printf("\n%-22s %8s %8s %8s %8s  %s\n",
+                "Solver", "Mean(us)", "Med(us)", "Max(us)", "Min(us)", "Mode");
+    std::printf("%-22s %8s %8s %8s %8s  %s\n",
+                "----------------------", "--------", "-------", "-------", "-------", "----");
+
+    auto mode_str = [](SolveMode m) -> const char* {
+        switch (m) {
+            case SolveMode::PRECOMPUTED: return "offline";
+            case SolveMode::HL_TRIG:    return "hl_trig";
+            case SolveMode::HL_TABLE:   return "hl_table";
+        }
+        return "?";
+    };
 
     for (auto& run : runs) {
         auto& times = run.solve_times_us;
         if (times.empty()) continue;
 
         double sum = std::accumulate(times.begin(), times.end(), 0.0);
-        double mean = sum / times.size();
+        double mean = sum / static_cast<double>(times.size());
 
         std::vector<double> sorted = times;
         std::sort(sorted.begin(), sorted.end());
@@ -523,8 +536,20 @@ int main(int argc, char** argv)
         double max_t = sorted.back();
         double min_t = sorted.front();
 
-        std::printf("%-12s %8.1f %8.1f %8.1f %8.1f\n",
-                    run.name, mean, median, max_t, min_t);
+        std::printf("%-22s %8.1f %8.1f %8.1f %8.1f  %s\n",
+                    run.name, mean, median, max_t, min_t, mode_str(run.mode));
+    }
+
+    // Final position and heading errors
+    std::printf("\n%-22s %12s %12s\n", "Solver", "Final|pos|(m)", "Final|θ|(rad)");
+    std::printf("%-22s %12s %12s\n", "----------------------", "-------------", "-------------");
+    for (size_t s = 0; s < runs.size(); ++s) {
+        const auto& run = runs[s];
+        double ep = std::sqrt(
+            (run.x_cur[0] - ref_path[n_sim].x_ref[0]) * (run.x_cur[0] - ref_path[n_sim].x_ref[0]) +
+            (run.x_cur[1] - ref_path[n_sim].x_ref[1]) * (run.x_cur[1] - ref_path[n_sim].x_ref[1]));
+        double eth = std::fabs(run.x_cur[2] - ref_path[n_sim].x_ref[2]);
+        std::printf("%-22s %12.4f %12.4f\n", run.name, ep, eth);
     }
 
     // Cleanup
@@ -532,6 +557,6 @@ int main(int argc, char** argv)
         solver_context_free(run.ctx);
     delete[] windows;
 
-    std::printf("\nDone. Check the rerun viewer for visualization.\n");
+    std::printf("\nDone. View results in the Rerun viewer.\n");
     return 0;
 }

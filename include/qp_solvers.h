@@ -9,7 +9,8 @@ enum class QpSolverType {
     FISTA,
     ACTIVE_SET,
     HPIPM,
-    QPOASES
+    QPOASES,
+    HPIPM_OCP
 };
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,26 @@ int hpipm_box_qp_solve(const double* H, const double* g,
                        double u_min, double u_max, int n,
                        const double* U_warm, double* U_out,
                        HpipmWorkspace& ws);
+
+struct HpipmOcpWorkspace {
+    void* memory;       // single aligned allocation for all HPIPM OCP structs
+    int memory_size;
+    int N_alloc;        // horizon length this workspace was allocated for
+};
+
+void hpipm_ocp_workspace_init(HpipmOcpWorkspace& ws, int N);
+void hpipm_ocp_workspace_free(HpipmOcpWorkspace& ws);
+
+// Solve OCP-structured QP using HPIPM Riccati-based IPM.
+// A_list: N x (NX*NX), B_list: N x (NX*NU)
+// Returns IPM iteration count.
+int hpipm_ocp_qp_solve(const double* A_list, const double* B_list,
+                        const double* Q, const double* Qf, const double* R,
+                        const double* x_ref_consistent, const double* u_ref,
+                        const double x0[NX],
+                        double u_min, double u_max, int N,
+                        double* U_out,
+                        HpipmOcpWorkspace& ws);
 
 #endif // MPC_USE_HPIPM
 
@@ -64,6 +85,7 @@ struct SolverContext {
 
 #ifdef MPC_USE_HPIPM
     HpipmWorkspace hpipm_ws;
+    HpipmOcpWorkspace hpipm_ocp_ws;
 #endif
 #ifdef MPC_USE_QPOASES
     QpoasesWorkspace qpoases_ws;
@@ -103,6 +125,12 @@ inline bool solver_available(QpSolverType type) {
 #else
             return false;
 #endif
+        case QpSolverType::HPIPM_OCP:
+#ifdef MPC_USE_HPIPM
+            return true;
+#else
+            return false;
+#endif
     }
     return false;
 }
@@ -113,6 +141,7 @@ inline const char* solver_name(QpSolverType type) {
         case QpSolverType::ACTIVE_SET: return "active_set";
         case QpSolverType::HPIPM:      return "hpipm";
         case QpSolverType::QPOASES:    return "qpoases";
+        case QpSolverType::HPIPM_OCP:  return "hpipm_ocp";
     }
     return "unknown";
 }

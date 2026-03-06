@@ -98,3 +98,36 @@ struct MPCFileHeader {
 
 constexpr uint32_t MPC_FILE_MAGIC = 0x4D504351;
 constexpr uint32_t MPC_FILE_VERSION = 1;
+
+// ---------------------------------------------------------------------------
+// Heading-lookup LTV mode data structures
+// ---------------------------------------------------------------------------
+
+// Trig decomposition: B_d(θ) = B_d0 + cos(θ)·B_dc + sin(θ)·B_ds
+struct HeadingLookupData {
+    double A_d[NX * NX];                         // constant discrete state matrix
+    double B_d0[NX * NU];                         // heading-independent B_d component
+    double B_dc[NX * NU];                         // cos(θ) coefficient
+    double B_ds[NX * NU];                         // sin(θ) coefficient
+    double A_d_pow[(N_MAX + 1) * NX * NX];        // A_d^k for k=0..N_MAX
+    double dt;
+};
+
+// Discrete heading table: B_d precomputed at M evenly-spaced headings
+constexpr int HEADING_TABLE_M_DEFAULT = 72;       // every 5°
+
+struct HeadingTableData {
+    double A_d[NX * NX];                          // same constant A_d
+    double B_d_table[HEADING_TABLE_M_DEFAULT * NX * NU]; // B_d at M headings
+    double A_d_pow[(N_MAX + 1) * NX * NX];
+    int M;                                         // number of heading samples
+    double dt;
+};
+
+// Heading schedule configuration
+struct HeadingScheduleConfig {
+    double alpha_0;        // max angular accel at zero ω (rad/s²)
+    double omega_max;      // max angular velocity (rad/s)
+    double v_max;          // max field velocity for derating (m/s)
+    double heading_gain;   // proportional gain for heading tracking (1/s)
+};
