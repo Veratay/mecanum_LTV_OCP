@@ -2,6 +2,8 @@
 
 #include "mpc_types.h"
 #include "mecanum_model.h"
+#include "qp_solvers.h"
+#include "heading_lookup.h"
 
 // High-level MPC controller wrapping offline precomputation + online solve.
 // Owns all allocated memory; no raw pointers exposed.
@@ -17,6 +19,10 @@ public:
 
     // Set MPC tuning. Must be called before loadTrajectory.
     void setConfig(const MPCConfig& config);
+
+    // Set the QP solver used in solve(). Default: FISTA.
+    // HPIPM_OCP requires loadTrajectory (not loadWindows) and MPC_USE_HPIPM build.
+    void setSolverType(QpSolverType type) { solver_type_ = type; }
 
     // ---- Trajectory loading ----
 
@@ -66,5 +72,16 @@ private:
     int n_windows_;
     int n_traj_windows_;  // number of original trajectory points (before padding)
 
-    BoxQPWorkspace workspace_;
+    // Padded reference trajectory (needed for HPIPM OCP path)
+    RefNode* ref_nodes_;
+    int n_ref_nodes_;
+
+    // Heading-lookup LTV data (precomputed from model params + dt)
+    HeadingLookupData hld_;
+    HeadingScheduleConfig sched_config_;
+    bool hld_valid_;
+
+    // Solver context and type
+    SolverContext solver_ctx_;
+    QpSolverType solver_type_;
 };

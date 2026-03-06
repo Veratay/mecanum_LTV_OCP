@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <algorithm>
 
 MecanumLTV::MecanumLTV()
     : params_{}
@@ -13,13 +14,23 @@ MecanumLTV::MecanumLTV()
     , windows_(nullptr)
     , n_windows_(0)
     , n_traj_windows_(0)
-    , workspace_{}
+    , ref_nodes_(nullptr)
+    , n_ref_nodes_(0)
+    , hld_{}
+    , sched_config_{}
+    , hld_valid_(false)
+    , solver_ctx_{}
+    , solver_type_(QpSolverType::FISTA)
 {
 }
 
 MecanumLTV::~MecanumLTV()
 {
     delete[] windows_;
+    delete[] ref_nodes_;
+#ifdef MPC_USE_HPIPM
+    solver_context_free(solver_ctx_);
+#endif
 }
 
 void MecanumLTV::setModelParams(const ModelParams& params)
@@ -53,12 +64,16 @@ static void lerp_sample(const double* a, const double* b, double frac, double* o
 
 int MecanumLTV::loadWindows(const char* filepath)
 {
-    // Free previous windows
+    // Free previous windows and ref nodes
     delete[] windows_;
     windows_ = nullptr;
     n_windows_ = 0;
     n_traj_windows_ = 0;
-    std::memset(&workspace_, 0, sizeof(workspace_));
+    delete[] ref_nodes_;
+    ref_nodes_ = nullptr;
+    n_ref_nodes_ = 0;
+    hld_valid_ = false;
+    std::memset(&solver_ctx_, 0, sizeof(solver_ctx_));
 
     MPCConfig loaded_config{};
     int n_loaded = 0;
@@ -84,12 +99,16 @@ int MecanumLTV::loadTrajectory(const double* samples, int n_samples, double dt)
     if (n_samples < 2 || dt <= 0.0)
         return 0;
 
-    // Free previous windows
+    // Free previous windows and ref nodes
     delete[] windows_;
     windows_ = nullptr;
     n_windows_ = 0;
     n_traj_windows_ = 0;
-    std::memset(&workspace_, 0, sizeof(workspace_));
+    delete[] ref_nodes_;
+    ref_nodes_ = nullptr;
+    n_ref_nodes_ = 0;
+    hld_valid_ = false;
+    std::memset(&solver_ctx_, 0, sizeof(solver_ctx_));
 
     // Override config dt with the requested uniform dt
     config_.dt = dt;
@@ -169,10 +188,18 @@ int MecanumLTV::loadTrajectory(const double* samples, int n_samples, double dt)
 
     // Precompute all windows (now n_padded - N = n_resampled windows)
     windows_ = mpc_precompute_all(padded_path, n_padded, params_, config_, n_windows_);
-    delete[] padded_path;
+
+    // Transfer ownership of padded_path to ref_nodes_ for the HPIPM OCP path
+    ref_nodes_ = padded_path;
+    n_ref_nodes_ = n_padded;
 
     // Store the index of the last real trajectory window for clamping
     n_traj_windows_ = n_resampled;
+
+    // Precompute heading-lookup LTV data for the HPIPM path
+    heading_lookup_precompute(params_, config_.dt, hld_);
+    sched_config_ = heading_schedule_config_from_params(params_);
+    hld_valid_ = true;
 
     return n_windows_;
 }
@@ -190,13 +217,25 @@ int MecanumLTV::solve(int window_idx, const double x0[NX], double* u_out)
     if (clamped) {
         // Invalidate warm-start so the solver does a cold start on the
         // same final window every time, rather than shifting U_prev.
-        workspace_.warm_valid = false;
+        solver_ctx_.box_ws.warm_valid = false;
     }
 
-    QPSolution sol = mpc_solve_online(windows_[idx], x0, config_, workspace_);
+#ifdef MPC_USE_HPIPM
+    if (solver_type_ == QpSolverType::HPIPM_OCP
+            && hld_valid_ && ref_nodes_
+            && idx + config_.N + 1 <= n_ref_nodes_) {
+        if (clamped)
+            solver_ctx_.hpipm_ocp_ws.warm_valid = false;
+        QPSolution sol = heading_lookup_solve_ocp(
+            hld_, ref_nodes_ + idx, x0, config_, sched_config_, solver_ctx_);
+        std::memcpy(u_out, sol.U,
+                    static_cast<std::size_t>(config_.N * NU) * sizeof(double));
+        return sol.n_iterations;
+    }
+#endif
 
+    QPSolution sol = mpc_solve_online(windows_[idx], x0, config_, solver_ctx_.box_ws);
     const int n_vars = windows_[idx].n_vars;
     std::memcpy(u_out, sol.U, n_vars * sizeof(double));
-
     return sol.n_iterations;
 }

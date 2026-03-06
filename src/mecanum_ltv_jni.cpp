@@ -2,6 +2,7 @@
 #include <string>
 
 #include "mecanum_ltv.h"
+#include "qp_solvers.h"
 
 // ---------------------------------------------------------------------------
 // JNI helpers
@@ -280,6 +281,50 @@ JNIEXPORT jint JNICALL
 Java_sigmacorns_control_ltv_MecanumLTVBridge_nativeNumVars(JNIEnv* env, jclass, jlong handle) {
     if (!check_handle(env, handle)) return 0;
     return from_handle(handle)->numVars();
+}
+
+// void nativeSetSolverType(long handle, int type)
+//   0 = FISTA, 1 = HPIPM_OCP
+JNIEXPORT void JNICALL
+Java_sigmacorns_control_ltv_MecanumLTVBridge_nativeSetSolverType(
+    JNIEnv* env, jclass, jlong handle, jint type)
+{
+    if (!check_handle(env, handle)) return;
+
+    QpSolverType solver_type;
+    switch (type) {
+        case 0: solver_type = QpSolverType::FISTA;     break;
+        case 1: solver_type = QpSolverType::HPIPM_OCP; break;
+        default:
+            throw_illegal_argument(env, "Unknown solver type: " + std::to_string(type));
+            return;
+    }
+
+#ifndef MPC_USE_HPIPM
+    if (solver_type == QpSolverType::HPIPM_OCP) {
+        throw_illegal_state(env, "HPIPM not available in this build");
+        return;
+    }
+#endif
+
+    from_handle(handle)->setSolverType(solver_type);
+}
+
+// boolean nativeIsSolverAvailable(int type)
+JNIEXPORT jboolean JNICALL
+Java_sigmacorns_control_ltv_MecanumLTVBridge_nativeIsSolverAvailable(
+    JNIEnv*, jclass, jint type)
+{
+    switch (type) {
+        case 0: return JNI_TRUE;  // FISTA always available
+        case 1:
+#ifdef MPC_USE_HPIPM
+            return JNI_TRUE;
+#else
+            return JNI_FALSE;
+#endif
+        default: return JNI_FALSE;
+    }
 }
 
 } // extern "C"

@@ -80,6 +80,13 @@ set_target_properties(blasfeo PROPERTIES
 add_dependencies(blasfeo blasfeo_ext)
 
 if(MPC_USE_HPIPM)
+    # HPIPM only knows AVX (x86) and GENERIC; ARM must use GENERIC
+    if(CMAKE_SYSTEM_NAME STREQUAL "Android" OR CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|arm")
+        set(HPIPM_TARGET "GENERIC")
+    else()
+        set(HPIPM_TARGET "AVX")
+    endif()
+
     # HPIPM (reuses the same BLASFEO install)
     ExternalProject_Add(hpipm_ext
         GIT_REPOSITORY https://github.com/giaf/hpipm.git
@@ -90,6 +97,9 @@ if(MPC_USE_HPIPM)
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON
             -DBLASFEO_PATH=${EXTERNAL_INSTALL_PREFIX}
             -DBUILD_SHARED_LIBS=OFF
+            -DTARGET=${HPIPM_TARGET}
+            -DHPIPM_TESTING=OFF
+            -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
             -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
             "-DCMAKE_C_FLAGS=${EXTERNAL_C_FLAGS}"
             "-DCMAKE_CXX_FLAGS=${EXTERNAL_CXX_FLAGS}"
